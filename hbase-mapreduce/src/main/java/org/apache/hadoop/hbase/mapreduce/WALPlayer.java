@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
@@ -45,6 +46,9 @@ import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.HFileOutputFormat2.TableInfo;
 import org.apache.hadoop.hbase.regionserver.wal.WALCellCodec;
+import org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils;
+import org.apache.hadoop.hbase.snapshot.SnapshotManifest;
+import org.apache.hadoop.hbase.snapshot.SnapshotRegionLocator;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.MapReduceExtendedCell;
@@ -60,6 +64,8 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
+
 /**
  * A tool to replay WAL files as a M/R job. The WAL can be replayed for a set of tables or all
  * tables, and a time range can be provided (in milliseconds). The WAL is filtered to the passed set
@@ -70,6 +76,7 @@ import org.slf4j.LoggerFactory;
 @InterfaceAudience.Public
 public class WALPlayer extends Configured implements Tool {
   private static final Logger LOG = LoggerFactory.getLogger(WALPlayer.class);
+  private static final String FULL_SNAPSHOT_MANIFEST_DIR_PREFIX = "wal.full.snapshot.manifest.dir.";
   final static String NAME = "WALPlayer";
   public final static String BULK_OUTPUT_CONF_KEY = "wal.bulk.output";
   public final static String TABLES_KEY = "wal.input.tables";
@@ -333,7 +340,7 @@ public class WALPlayer extends Configured implements Tool {
         List<TableInfo> tableInfoList = new ArrayList<TableInfo>();
         for (TableName tableName : tableNames) {
           Table table = conn.getTable(tableName);
-          RegionLocator regionLocator = conn.getRegionLocator(tableName);
+          RegionLocator regionLocator = getRegionLocator(tableName, conf, conn);
           tableInfoList.add(new TableInfo(table.getDescriptor(), regionLocator));
         }
         MultiTableHFileOutputFormat.configureIncrementalLoad(job, tableInfoList);
@@ -422,5 +429,26 @@ public class WALPlayer extends Configured implements Tool {
     }
     Job job = createSubmittableJob(args);
     return job.waitForCompletion(true) ? 0 : 1;
+  }
+
+  public static String createFullSnapshotManifestDirKey(TableName tableName) {
+    String modifiedName = tableName.getNameAsString().replaceAll("-", "_");
+    return FULL_SNAPSHOT_MANIFEST_DIR_PREFIX + modifiedName;
+  }
+
+  private static RegionLocator getRegionLocator(TableName tableName, Configuration conf,
+    Connection conn) throws IOException {
+    String manifestDir = conf.get(createFullSnapshotManifestDirKey(tableName));
+
+    if (manifestDir == null) {
+      return conn.getRegionLocator(tableName);
+    }
+
+    Path manifestDirPath = new Path(manifestDir);
+    FileSystem fs = manifestDirPath.getFileSystem(conf);
+    SnapshotProtos.SnapshotDescription desc =
+      SnapshotDescriptionUtils.readSnapshotInfo(fs, manifestDirPath);
+    SnapshotManifest manifest = SnapshotManifest.open(conf, fs, manifestDirPath, desc);
+    return SnapshotRegionLocator.create(manifest);
   }
 }
