@@ -23,6 +23,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
@@ -31,12 +34,13 @@ import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
-
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 
 @InterfaceAudience.Private
 public class SnapshotRegionLocator implements RegionLocator {
+
+  private static final String SNAPSHOT_MANIFEST_DIR_PREFIX = "region.locator.snapshot.manifest.dir.";
 
   private static final ServerName DUMMY_SERVER =
     ServerName.parseServerName("www.hbase.com,1234,1212121212");
@@ -46,7 +50,13 @@ public class SnapshotRegionLocator implements RegionLocator {
 
   private final List<HRegionLocation> rawLocations;
 
-  public static SnapshotRegionLocator create(SnapshotManifest manifest) {
+  public static SnapshotRegionLocator create(Configuration conf, TableName table) throws IOException {
+    Path workingDir = new Path(conf.get(getSnapshotManifestDir(table)));
+    FileSystem fs = workingDir.getFileSystem(conf);
+    SnapshotProtos.SnapshotDescription desc =
+      SnapshotDescriptionUtils.readSnapshotInfo(fs, workingDir);
+    SnapshotManifest manifest = SnapshotManifest.open(conf, fs, workingDir, desc);
+
     TableName tableName = manifest.getTableDescriptor().getTableName();
     TreeMap<byte[], HRegionReplicas> replicas = new TreeMap<>(Bytes.BYTES_COMPARATOR);
     List<HRegionLocation> rawLocations = new ArrayList<>();
@@ -107,6 +117,18 @@ public class SnapshotRegionLocator implements RegionLocator {
   @Override
   public void close() throws IOException {
 
+  }
+
+  public static boolean shouldUseSnapshotRegionLocator(Configuration conf, TableName table) {
+    return conf.get(getSnapshotManifestDir(table)) != null;
+  }
+
+  public static void setSnapshotManifestDir(Configuration conf, String dir, TableName table) {
+    conf.set(getSnapshotManifestDir(table), dir);
+  }
+
+  private static String getSnapshotManifestDir(TableName table) {
+    return SNAPSHOT_MANIFEST_DIR_PREFIX + table.getNameAsString().replaceAll("-", "_");
   }
 
   private static HRegionLocation toLocation(HBaseProtos.RegionInfo ri, TableName tableName) {

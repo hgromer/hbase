@@ -37,6 +37,8 @@ import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
@@ -183,7 +185,7 @@ public class TestIncrementalBackup extends TestBackupBase {
 
       LOG.debug("Restoring full " + backupIdFull);
       client.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, backupIdFull, false,
-        tablesRestoreFull, tablesMapFull, true));
+        tablesRestoreFull, tablesMapFull, true, true));
 
       // #6.1 - check tables for full restore
       Admin hAdmin = TEST_UTIL.getAdmin();
@@ -204,7 +206,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       TableName[] tablesRestoreIncMultiple = new TableName[] { table1, table2 };
       TableName[] tablesMapIncMultiple = new TableName[] { table1_restore, table2_restore };
       client.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, backupIdIncMultiple2, false,
-        tablesRestoreIncMultiple, tablesMapIncMultiple, true));
+        tablesRestoreIncMultiple, tablesMapIncMultiple, true, true));
       hTable = conn.getTable(table1_restore);
 
       LOG.debug("After incremental restore: " + hTable.getDescriptor());

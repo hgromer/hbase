@@ -24,11 +24,14 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.TreeMap;
+import org.apache.commons.compress.utils.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.NamespaceNotFoundException;
@@ -50,10 +53,11 @@ import org.apache.hadoop.hbase.tool.BulkLoadHFilesTool;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSTableDescriptors;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
 
 /**
@@ -152,7 +156,7 @@ public class RestoreTool {
    * @throws IOException exception
    */
   public void incrementalRestoreTable(Connection conn, Path tableBackupPath, Path[] logDirs,
-    TableName[] tableNames, TableName[] newTableNames, String incrBackupId) throws IOException {
+    TableName[] tableNames, TableName[] newTableNames, String incrBackupId, boolean keepOriginalSplits) throws IOException {
     try (Admin admin = conn.getAdmin()) {
       if (tableNames.length != newTableNames.length) {
         throw new IOException("Number of source tables and target tables does not match!");
@@ -200,6 +204,7 @@ public class RestoreTool {
           LOG.info("Changed " + newTableDescriptor.getTableName() + " to: " + newTableDescriptor);
         }
       }
+      conf.setBoolean(RestoreJob.KEEP_ORIGINAL_SPLITS_OPT, keepOriginalSplits);
       RestoreJob restoreService = BackupRestoreFactory.getRestoreJob(conf);
 
       restoreService.run(logDirs, tableNames, restoreRootDir, newTableNames, false);
@@ -207,8 +212,8 @@ public class RestoreTool {
   }
 
   public void fullRestoreTable(Connection conn, Path tableBackupPath, TableName tableName,
-    TableName newTableName, boolean truncateIfExists, String lastIncrBackupId) throws IOException {
-    createAndRestoreTable(conn, tableName, newTableName, tableBackupPath, truncateIfExists,
+    TableName newTableName, boolean truncateIfExists, boolean isKeepOriginalSplits, String lastIncrBackupId) throws IOException {
+    createAndRestoreTable(conn, tableName, newTableName, tableBackupPath, truncateIfExists, isKeepOriginalSplits,
       lastIncrBackupId);
   }
 
@@ -256,7 +261,7 @@ public class RestoreTool {
    * @param tableName is the table backed up
    * @return {@link TableDescriptor} saved in backup image of the table
    */
-  TableDescriptor getTableDesc(TableName tableName) throws IOException {
+   Pair<TableDescriptor, SnapshotManifest> getTableDesc(TableName tableName) throws IOException {
     Path tableInfoPath = this.getTableInfoPath(tableName);
     SnapshotDescription desc = SnapshotDescriptionUtils.readSnapshotInfo(fs, tableInfoPath);
     SnapshotManifest manifest = SnapshotManifest.open(conf, fs, tableInfoPath, desc);
@@ -269,7 +274,7 @@ public class RestoreTool {
       throw new FileNotFoundException("couldn't find Table Desc for table: " + tableName
         + " under tableInfoPath: " + tableInfoPath.toString());
     }
-    return tableDescriptor;
+    return Pair.newPair(tableDescriptor, manifest);
   }
 
   private TableDescriptor getTableDescriptor(FileSystem fileSys, TableName tableName,
@@ -283,11 +288,12 @@ public class RestoreTool {
   }
 
   private void createAndRestoreTable(Connection conn, TableName tableName, TableName newTableName,
-    Path tableBackupPath, boolean truncateIfExists, String lastIncrBackupId) throws IOException {
+    Path tableBackupPath, boolean truncateIfExists, boolean isKeepOriginalSplits, String lastIncrBackupId) throws IOException {
     if (newTableName == null) {
       newTableName = tableName;
     }
     FileSystem fileSys = tableBackupPath.getFileSystem(this.conf);
+    byte[][] keys = null;
 
     // get table descriptor first
     TableDescriptor tableDescriptor = getTableDescriptor(fileSys, tableName, lastIncrBackupId);
@@ -306,7 +312,9 @@ public class RestoreTool {
           SnapshotManifest manifest = SnapshotManifest.open(conf, fileSys, tableSnapshotPath, desc);
           tableDescriptor = manifest.getTableDescriptor();
         } else {
-          tableDescriptor = getTableDesc(tableName);
+          Pair<TableDescriptor, SnapshotManifest> pair = getTableDesc(tableName);
+          tableDescriptor = pair.getFirst();
+          keys = getBoundaryKeys(pair.getSecond());
           snapshotMap.put(tableName, getTableInfoPath(tableName));
         }
         if (tableDescriptor == null) {
@@ -327,7 +335,7 @@ public class RestoreTool {
             + ", will only create table");
         }
         tableDescriptor = TableDescriptorBuilder.copy(newTableName, tableDescriptor);
-        checkAndCreateTable(conn, newTableName, null, tableDescriptor, truncateIfExists);
+        checkAndCreateTable(conn, newTableName, keys, tableDescriptor, truncateIfExists);
         return;
       } else {
         throw new IllegalStateException(
@@ -345,10 +353,12 @@ public class RestoreTool {
     // load all files in dir
     try {
       ArrayList<Path> regionPathList = getRegionList(tableName);
+      keys = generateBoundaryKeys(regionPathList);
 
       // should only try to create the table with all region informations, so we could pre-split
       // the regions in fine grain
-      checkAndCreateTable(conn, newTableName, regionPathList, tableDescriptor, truncateIfExists);
+      checkAndCreateTable(conn, newTableName, keys, tableDescriptor, truncateIfExists);
+      conf.setBoolean(RestoreJob.KEEP_ORIGINAL_SPLITS_OPT, isKeepOriginalSplits);
       RestoreJob restoreService = BackupRestoreFactory.getRestoreJob(conf);
       Path[] paths = new Path[regionPathList.size()];
       regionPathList.toArray(paths);
@@ -376,6 +386,18 @@ public class RestoreTool {
       regionDirList.add(child);
     }
     return regionDirList;
+  }
+
+  private static byte[][] getBoundaryKeys(SnapshotManifest manifest) {
+    List<SnapshotProtos.SnapshotRegionManifest> regions = manifest.getRegionManifests();
+    byte[][] keys = new byte[regions.size()][];
+
+    for (int i = 0; i < regions.size(); i++) {
+      SnapshotProtos.SnapshotRegionManifest region = regions.get(i);
+      keys[i] = region.getRegionInfo().getStartKey().toByteArray();
+    }
+
+    return keys;
   }
 
   /**
@@ -471,7 +493,7 @@ public class RestoreTool {
    * @throws IOException exception
    */
   private void checkAndCreateTable(Connection conn, TableName targetTableName,
-    ArrayList<Path> regionDirList, TableDescriptor htd, boolean truncateIfExists)
+    byte[][] keys, TableDescriptor htd, boolean truncateIfExists)
     throws IOException {
     try (Admin admin = conn.getAdmin()) {
       boolean createNew = false;
@@ -489,18 +511,12 @@ public class RestoreTool {
       }
       if (createNew) {
         LOG.info("Creating target table '" + targetTableName + "'");
-        byte[][] keys = null;
         try {
-          if (regionDirList == null || regionDirList.size() == 0) {
+          if (keys == null || keys.length == 0) {
             admin.createTable(htd);
           } else {
-            keys = generateBoundaryKeys(regionDirList);
-            if (keys.length > 0) {
-              // create table using table descriptor and region boundaries
-              admin.createTable(htd, keys);
-            } else {
-              admin.createTable(htd);
-            }
+            // create table using table descriptor and region boundaries
+            admin.createTable(htd, keys);
           }
         } catch (NamespaceNotFoundException e) {
           LOG.warn("There was no namespace and the same will be created");
@@ -530,3 +546,4 @@ public class RestoreTool {
     }
   }
 }
+
