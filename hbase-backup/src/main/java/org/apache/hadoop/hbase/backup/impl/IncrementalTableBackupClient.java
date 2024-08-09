@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.backup.impl;
 
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.JOB_NAME_CONF_KEY;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -108,13 +109,11 @@ public class IncrementalTableBackupClient extends TableBackupClient {
    * @return map of table to List of files
    */
   @SuppressWarnings("unchecked")
-  protected void handleBulkLoad(List<TableName> sTableList)
-    throws IOException {
+  protected void handleBulkLoad(List<TableName> sTableList) throws IOException {
     Pair<Map<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>>, List<byte[]>> pair =
       backupManager.readBulkloadRows(sTableList);
     Map<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>> map = pair.getFirst();
     Path rootdir = CommonFSUtils.getRootDir(conf);
-
 
     for (Map.Entry<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>> tblEntry : map
       .entrySet()) {
@@ -152,7 +151,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     player.setConf(conf);
 
     String inputDirs = StringUtils.join(files, ",");
-    String[] args = {inputDirs, tn.getNameAsString()};
+    String[] args = { inputDirs, tn.getNameAsString() };
 
     try {
       int result = player.run(args);

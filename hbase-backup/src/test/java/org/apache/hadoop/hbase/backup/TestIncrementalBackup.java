@@ -18,9 +18,12 @@
 package org.apache.hadoop.hbase.backup;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
@@ -37,16 +40,16 @@ import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.LogRoller;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -77,6 +80,42 @@ public class TestIncrementalBackup extends TestBackupBase {
   }
 
   public TestIncrementalBackup(Boolean b) {
+  }
+
+  @Before
+  public void cleanup() throws Exception {
+    // Every operation here may not be necessary for any given test,
+    // some often being no-ops. the goal is to help ensure atomicity
+    // of that tests that implement TestBackupBase
+    try (BackupAdmin backupAdmin = getBackupAdmin()) {
+      backupAdmin.listBackupSets().forEach(backupSet -> {
+        try {
+          backupAdmin.deleteBackupSet(backupSet.getName());
+        } catch (IOException ignored) {
+        }
+      });
+    } catch (Exception ignored) {
+    }
+    Arrays.stream(TEST_UTIL.getAdmin().listTableNames())
+      .filter(tableName -> !tableName.isSystemTable()).forEach(tableName -> {
+        try {
+          TEST_UTIL.truncateTable(tableName);
+        } catch (IOException ignored) {
+        }
+      });
+    TEST_UTIL.getMiniHBaseCluster().getRegionServerThreads().forEach(rst -> {
+      try {
+        LogRoller walRoller = rst.getRegionServer().getWalRoller();
+        walRoller.requestRollAll();
+        walRoller.waitUntilWalRollFinished();
+      } catch (Exception ignored) {
+      }
+    });
+
+    try (Connection conn = ConnectionFactory.createConnection(conf1)) {
+      loadTable(conn.getTable(table1));
+      loadTable(conn.getTable(table2));
+    }
   }
 
   // implement all test cases in 1 test since incremental
@@ -185,7 +224,7 @@ public class TestIncrementalBackup extends TestBackupBase {
 
       LOG.debug("Restoring full " + backupIdFull);
       client.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, backupIdFull, false,
-        tablesRestoreFull, tablesMapFull, true, true));
+        tablesRestoreFull, tablesMapFull, true));
 
       // #6.1 - check tables for full restore
       Admin hAdmin = TEST_UTIL.getAdmin();
@@ -206,7 +245,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       TableName[] tablesRestoreIncMultiple = new TableName[] { table1, table2 };
       TableName[] tablesMapIncMultiple = new TableName[] { table1_restore, table2_restore };
       client.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, backupIdIncMultiple2, false,
-        tablesRestoreIncMultiple, tablesMapIncMultiple, true, true));
+        tablesRestoreIncMultiple, tablesMapIncMultiple, true));
       hTable = conn.getTable(table1_restore);
 
       LOG.debug("After incremental restore: " + hTable.getDescriptor());
@@ -227,6 +266,60 @@ public class TestIncrementalBackup extends TestBackupBase {
       Assert.assertEquals(NB_ROWS_IN_BATCH + 5, HBaseTestingUtil.countRows(hTable));
       hTable.close();
       admin.close();
+    }
+  }
+
+  @Test
+  public void TestIncBackupRestoreWithOriginalSplits() throws Exception {
+    byte[] fam1 = Bytes.toBytes("f");
+    byte[] mobFam = Bytes.toBytes("mob");
+
+    List<TableName> tables = Lists.newArrayList(table1);
+    TableDescriptor newTable1Desc =
+      TableDescriptorBuilder.newBuilder(table1Desc).setColumnFamily(ColumnFamilyDescriptorBuilder
+        .newBuilder(mobFam).setMobEnabled(true).setMobThreshold(5L).build()).build();
+    TEST_UTIL.getAdmin().modifyTable(newTable1Desc);
+
+    try (Connection conn = ConnectionFactory.createConnection(conf1)) {
+      BackupAdminImpl backupAdmin = new BackupAdminImpl(conn);
+      BackupRequest request = createBackupRequest(BackupType.FULL, tables, BACKUP_ROOT_DIR);
+      String fullBackupId = backupAdmin.backupTables(request);
+      assertTrue(checkSucceeded(fullBackupId));
+
+      TableName[] fromTables = new TableName[] { table1 };
+      TableName[] toTables = new TableName[] { table1_restore };
+      backupAdmin.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, fullBackupId, false,
+        fromTables, toTables, true, true));
+
+      Table table = conn.getTable(table1_restore);
+      Assert.assertEquals(HBaseTestingUtil.countRows(table), NB_ROWS_IN_BATCH);
+
+      int ROWS_TO_ADD = 1_000;
+      // different IDs so that rows don't overlap
+      insertIntoTable(conn, table1, fam1, 3, ROWS_TO_ADD);
+      insertIntoTable(conn, table1, mobFam, 4, ROWS_TO_ADD);
+
+      Admin admin = conn.getAdmin();
+      List<HRegion> currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
+      for (HRegion region : currentRegions) {
+        byte[] name = region.getRegionInfo().getRegionName();
+        admin.splitRegionAsync(name).get();
+      }
+
+      while (!admin.isTableAvailable(table1)) {
+        Thread.sleep(100);
+      }
+
+      // Make sure we've split regions
+      assertNotEquals(currentRegions, TEST_UTIL.getHBaseCluster().getRegions(table1));
+
+      request = createBackupRequest(BackupType.INCREMENTAL, tables, BACKUP_ROOT_DIR);
+      String incrementalBackupId = backupAdmin.backupTables(request);
+      assertTrue(checkSucceeded(incrementalBackupId));
+      backupAdmin.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, incrementalBackupId,
+        false, fromTables, toTables, true, true));
+      Assert.assertEquals(HBaseTestingUtil.countRows(table),
+        NB_ROWS_IN_BATCH + ROWS_TO_ADD + ROWS_TO_ADD);
     }
   }
 }

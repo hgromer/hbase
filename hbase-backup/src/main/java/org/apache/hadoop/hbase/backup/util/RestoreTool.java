@@ -24,14 +24,11 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.TreeMap;
-import org.apache.commons.compress.utils.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.NamespaceNotFoundException;
@@ -57,6 +54,7 @@ import org.apache.hadoop.hbase.util.Pair;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
 
@@ -156,7 +154,8 @@ public class RestoreTool {
    * @throws IOException exception
    */
   public void incrementalRestoreTable(Connection conn, Path tableBackupPath, Path[] logDirs,
-    TableName[] tableNames, TableName[] newTableNames, String incrBackupId, boolean keepOriginalSplits) throws IOException {
+    TableName[] tableNames, TableName[] newTableNames, String incrBackupId,
+    boolean keepOriginalSplits) throws IOException {
     try (Admin admin = conn.getAdmin()) {
       if (tableNames.length != newTableNames.length) {
         throw new IOException("Number of source tables and target tables does not match!");
@@ -212,9 +211,10 @@ public class RestoreTool {
   }
 
   public void fullRestoreTable(Connection conn, Path tableBackupPath, TableName tableName,
-    TableName newTableName, boolean truncateIfExists, boolean isKeepOriginalSplits, String lastIncrBackupId) throws IOException {
-    createAndRestoreTable(conn, tableName, newTableName, tableBackupPath, truncateIfExists, isKeepOriginalSplits,
-      lastIncrBackupId);
+    TableName newTableName, boolean truncateIfExists, boolean isKeepOriginalSplits,
+    String lastIncrBackupId) throws IOException {
+    createAndRestoreTable(conn, tableName, newTableName, tableBackupPath, truncateIfExists,
+      isKeepOriginalSplits, lastIncrBackupId);
   }
 
   /**
@@ -261,7 +261,7 @@ public class RestoreTool {
    * @param tableName is the table backed up
    * @return {@link TableDescriptor} saved in backup image of the table
    */
-   Pair<TableDescriptor, SnapshotManifest> getTableDesc(TableName tableName) throws IOException {
+  TableDescriptor getTableDesc(TableName tableName) throws IOException {
     Path tableInfoPath = this.getTableInfoPath(tableName);
     SnapshotDescription desc = SnapshotDescriptionUtils.readSnapshotInfo(fs, tableInfoPath);
     SnapshotManifest manifest = SnapshotManifest.open(conf, fs, tableInfoPath, desc);
@@ -274,7 +274,7 @@ public class RestoreTool {
       throw new FileNotFoundException("couldn't find Table Desc for table: " + tableName
         + " under tableInfoPath: " + tableInfoPath.toString());
     }
-    return Pair.newPair(tableDescriptor, manifest);
+    return tableDescriptor;
   }
 
   private TableDescriptor getTableDescriptor(FileSystem fileSys, TableName tableName,
@@ -288,12 +288,12 @@ public class RestoreTool {
   }
 
   private void createAndRestoreTable(Connection conn, TableName tableName, TableName newTableName,
-    Path tableBackupPath, boolean truncateIfExists, boolean isKeepOriginalSplits, String lastIncrBackupId) throws IOException {
+    Path tableBackupPath, boolean truncateIfExists, boolean isKeepOriginalSplits,
+    String lastIncrBackupId) throws IOException {
     if (newTableName == null) {
       newTableName = tableName;
     }
     FileSystem fileSys = tableBackupPath.getFileSystem(this.conf);
-    byte[][] keys = null;
 
     // get table descriptor first
     TableDescriptor tableDescriptor = getTableDescriptor(fileSys, tableName, lastIncrBackupId);
@@ -312,9 +312,7 @@ public class RestoreTool {
           SnapshotManifest manifest = SnapshotManifest.open(conf, fileSys, tableSnapshotPath, desc);
           tableDescriptor = manifest.getTableDescriptor();
         } else {
-          Pair<TableDescriptor, SnapshotManifest> pair = getTableDesc(tableName);
-          tableDescriptor = pair.getFirst();
-          keys = getBoundaryKeys(pair.getSecond());
+          tableDescriptor = getTableDesc(tableName);
           snapshotMap.put(tableName, getTableInfoPath(tableName));
         }
         if (tableDescriptor == null) {
@@ -335,7 +333,7 @@ public class RestoreTool {
             + ", will only create table");
         }
         tableDescriptor = TableDescriptorBuilder.copy(newTableName, tableDescriptor);
-        checkAndCreateTable(conn, newTableName, keys, tableDescriptor, truncateIfExists);
+        checkAndCreateTable(conn, newTableName, null, tableDescriptor, truncateIfExists);
         return;
       } else {
         throw new IllegalStateException(
@@ -353,7 +351,7 @@ public class RestoreTool {
     // load all files in dir
     try {
       ArrayList<Path> regionPathList = getRegionList(tableName);
-      keys = generateBoundaryKeys(regionPathList);
+      byte[][] keys = generateBoundaryKeys(regionPathList);
 
       // should only try to create the table with all region informations, so we could pre-split
       // the regions in fine grain
@@ -492,9 +490,8 @@ public class RestoreTool {
    * @param truncateIfExists truncates table if exists
    * @throws IOException exception
    */
-  private void checkAndCreateTable(Connection conn, TableName targetTableName,
-    byte[][] keys, TableDescriptor htd, boolean truncateIfExists)
-    throws IOException {
+  private void checkAndCreateTable(Connection conn, TableName targetTableName, byte[][] keys,
+    TableDescriptor htd, boolean truncateIfExists) throws IOException {
     try (Admin admin = conn.getAdmin()) {
       boolean createNew = false;
       if (admin.tableExists(targetTableName)) {
@@ -546,4 +543,3 @@ public class RestoreTool {
     }
   }
 }
-

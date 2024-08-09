@@ -44,8 +44,10 @@ public final class BackupRestoreFactory {
    * @return backup restore job instance
    */
   public static RestoreJob getRestoreJob(Configuration conf) {
-    Class<? extends RestoreJob> defaultCls = conf.getBoolean(RestoreJob.KEEP_ORIGINAL_SPLITS_OPT, false) ?
-      MapReduceRestoreToOriginalSplitsJob.class : MapReduceRestoreJob.class;
+    Class<? extends RestoreJob> defaultCls =
+      conf.getBoolean(RestoreJob.KEEP_ORIGINAL_SPLITS_OPT, false)
+        ? MapReduceRestoreToOriginalSplitsJob.class
+        : MapReduceRestoreJob.class;
 
     Class<? extends RestoreJob> cls =
       conf.getClass(HBASE_INCR_RESTORE_IMPL_CLASS, defaultCls, RestoreJob.class);

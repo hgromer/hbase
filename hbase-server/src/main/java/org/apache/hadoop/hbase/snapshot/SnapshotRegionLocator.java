@@ -34,13 +34,15 @@ import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 
 @InterfaceAudience.Private
 public class SnapshotRegionLocator implements RegionLocator {
 
-  private static final String SNAPSHOT_MANIFEST_DIR_PREFIX = "region.locator.snapshot.manifest.dir.";
+  private static final String SNAPSHOT_MANIFEST_DIR_PREFIX =
+    "region.locator.snapshot.manifest.dir.";
 
   private static final ServerName DUMMY_SERVER =
     ServerName.parseServerName("www.hbase.com,1234,1212121212");
@@ -50,7 +52,8 @@ public class SnapshotRegionLocator implements RegionLocator {
 
   private final List<HRegionLocation> rawLocations;
 
-  public static SnapshotRegionLocator create(Configuration conf, TableName table) throws IOException {
+  public static SnapshotRegionLocator create(Configuration conf, TableName table)
+    throws IOException {
     Path workingDir = new Path(conf.get(getSnapshotManifestDir(table)));
     FileSystem fs = workingDir.getFileSystem(conf);
     SnapshotProtos.SnapshotDescription desc =

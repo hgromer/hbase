@@ -1,8 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.hadoop.hbase.backup.mapreduce;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
@@ -14,12 +30,11 @@ import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSVisitor;
 import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 @InterfaceAudience.Private
 public class MapReduceRestoreToOriginalSplitsJob implements RestoreJob {
-  private static final Logger LOG = LoggerFactory.getLogger(MapReduceRestoreToOriginalSplitsJob.class);
   private Configuration conf;
 
   @Override
@@ -49,28 +64,29 @@ public class MapReduceRestoreToOriginalSplitsJob implements RestoreJob {
     return conf;
   }
 
-  private static Map<byte[], List<Path>> buildFamily2Files(FileSystem fs, Path[] dirs, boolean isFullBackup) throws IOException {
+  private static Map<byte[], List<Path>> buildFamily2Files(FileSystem fs, Path[] dirs,
+    boolean isFullBackup) throws IOException {
     if (isFullBackup) {
       return buildFullBackupFamily2Files(fs, dirs);
     }
 
-    Map<byte[], List<Path>> family2Files = Maps.newHashMap();
+    Map<byte[], List<Path>> family2Files = new HashMap<>();
 
     for (Path dir : dirs) {
-     byte[] familyName = Bytes.toBytes(dir.getParent().getName());
-     if (family2Files.containsKey(familyName)) {
-       family2Files.get(familyName).add(dir);
-     } else {
-       family2Files.put(familyName, Lists.newArrayList(dir));
-     }
+      byte[] familyName = Bytes.toBytes(dir.getParent().getName());
+      if (family2Files.containsKey(familyName)) {
+        family2Files.get(familyName).add(dir);
+      } else {
+        family2Files.put(familyName, Lists.newArrayList(dir));
+      }
     }
 
     return family2Files;
   }
 
-
-  private static Map<byte[], List<Path>> buildFullBackupFamily2Files(FileSystem fs, Path[] dirs) throws IOException {
-    Map<byte[], List<Path>> family2Files = Maps.newHashMap();
+  private static Map<byte[], List<Path>> buildFullBackupFamily2Files(FileSystem fs, Path[] dirs)
+    throws IOException {
+    Map<byte[], List<Path>> family2Files = new HashMap<>();
     for (Path regionPath : dirs) {
       FSVisitor.visitRegionStoreFiles(fs, regionPath, (region, family, name) -> {
         Path path = new Path(regionPath, new Path(family, name));

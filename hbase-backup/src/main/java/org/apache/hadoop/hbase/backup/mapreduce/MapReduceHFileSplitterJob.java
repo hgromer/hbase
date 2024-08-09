@@ -173,7 +173,8 @@ public class MapReduceHFileSplitterJob extends Configured implements Tool {
     return result;
   }
 
-  private static RegionLocator getRegionLocator(Configuration conf, Connection conn, TableName table) throws IOException {
+  private static RegionLocator getRegionLocator(Configuration conf, Connection conn,
+    TableName table) throws IOException {
     if (SnapshotRegionLocator.shouldUseSnapshotRegionLocator(conf, table)) {
       return SnapshotRegionLocator.create(conf, table);
     }

@@ -115,7 +115,6 @@ public class BackupManifest {
     private ArrayList<BackupImage> ancestors;
     private Map<TableName, Map<String, Long>> incrTimeRanges;
 
-
     static Builder newBuilder() {
       return new Builder();
     }

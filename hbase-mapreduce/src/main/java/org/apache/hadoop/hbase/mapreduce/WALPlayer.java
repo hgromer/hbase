@@ -427,7 +427,6 @@ public class WALPlayer extends Configured implements Tool {
     return job.waitForCompletion(true) ? 0 : 1;
   }
 
-
   private static RegionLocator getRegionLocator(TableName tableName, Configuration conf,
     Connection conn) throws IOException {
     if (SnapshotRegionLocator.shouldUseSnapshotRegionLocator(conf, tableName)) {
