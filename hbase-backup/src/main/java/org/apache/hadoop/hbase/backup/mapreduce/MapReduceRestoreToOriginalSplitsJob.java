@@ -42,7 +42,7 @@ public class MapReduceRestoreToOriginalSplitsJob implements RestoreJob {
     TableName[] toTables, boolean fullBackupRestore) throws IOException {
     Configuration conf = getConf();
 
-    // We are copying directly the snapshot. We should copy the files rather than moving them
+    // We are using the files from the snapshot. We should copy them rather than move them over
     conf.setBoolean(BulkLoadHFiles.ALWAYS_COPY_FILES, true);
 
     FileSystem fs = FileSystem.get(conf);
