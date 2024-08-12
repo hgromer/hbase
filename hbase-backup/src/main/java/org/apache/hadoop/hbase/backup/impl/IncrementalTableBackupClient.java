@@ -35,7 +35,6 @@ import org.apache.hadoop.hbase.backup.BackupRequest;
 import org.apache.hadoop.hbase.backup.BackupRestoreFactory;
 import org.apache.hadoop.hbase.backup.BackupType;
 import org.apache.hadoop.hbase.backup.HBackupFileSystem;
-import org.apache.hadoop.hbase.backup.mapreduce.MapReduceBackupCopyJob;
 import org.apache.hadoop.hbase.backup.mapreduce.MapReduceHFileSplitterJob;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
@@ -164,69 +163,6 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     }
   }
 
-  private void copyBulkLoadedFiles(List<String> activeFiles, List<String> archiveFiles)
-    throws IOException {
-    try {
-      // Enable special mode of BackupDistCp
-      conf.setInt(MapReduceBackupCopyJob.NUMBER_OF_LEVELS_TO_PRESERVE_KEY, 5);
-      // Copy active files
-      String tgtDest = backupInfo.getBackupRootDir() + Path.SEPARATOR + backupInfo.getBackupId();
-      int attempt = 1;
-      while (activeFiles.size() > 0) {
-        LOG.info("Copy " + activeFiles.size() + " active bulk loaded files. Attempt =" + attempt++);
-        String[] toCopy = new String[activeFiles.size()];
-        activeFiles.toArray(toCopy);
-        // Active file can be archived during copy operation,
-        // we need to handle this properly
-        try {
-          incrementalCopyHFiles(toCopy, tgtDest);
-          break;
-        } catch (IOException e) {
-          // Check if some files got archived
-          // Update active and archived lists
-          // When file is being moved from active to archive
-          // directory, the number of active files decreases
-          int numOfActive = activeFiles.size();
-          updateFileLists(activeFiles, archiveFiles);
-          if (activeFiles.size() < numOfActive) {
-            continue;
-          }
-          // if not - throw exception
-          throw e;
-        }
-      }
-      // If incremental copy will fail for archived files
-      // we will have partially loaded files in backup destination (only files from active data
-      // directory). It is OK, because the backup will marked as FAILED and data will be cleaned up
-      if (archiveFiles.size() > 0) {
-        String[] toCopy = new String[archiveFiles.size()];
-        archiveFiles.toArray(toCopy);
-        incrementalCopyHFiles(toCopy, tgtDest);
-      }
-    } finally {
-      // Disable special mode of BackupDistCp
-      conf.unset(MapReduceBackupCopyJob.NUMBER_OF_LEVELS_TO_PRESERVE_KEY);
-    }
-  }
-
-  private void updateFileLists(List<String> activeFiles, List<String> archiveFiles)
-    throws IOException {
-    List<String> newlyArchived = new ArrayList<>();
-
-    for (String spath : activeFiles) {
-      if (!fs.exists(new Path(spath))) {
-        newlyArchived.add(spath);
-      }
-    }
-
-    if (newlyArchived.size() > 0) {
-      activeFiles.removeAll(newlyArchived);
-      archiveFiles.addAll(newlyArchived);
-    }
-
-    LOG.debug(newlyArchived.size() + " files have been archived.");
-  }
-
   @Override
   public void execute() throws IOException {
     try {
@@ -248,6 +184,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
       // copy out the table and region info files for each table
       BackupUtils.copyTableRegionInfo(conn, backupInfo, conf);
       // convert WAL to HFiles and copy them to .tmp under BACKUP_ROOT
+      setupTableSplits();
       convertWALsToHFiles();
       incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
         backupInfo.getBackupRootDir());
@@ -370,6 +307,23 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     conf.set(JOB_NAME_CONF_KEY, jobname);
     String[] playerArgs = { dirs, StringUtils.join(tableList, ",") };
 
+    try {
+      player.setConf(conf);
+      int result = player.run(playerArgs);
+      if (result != 0) {
+        throw new IOException("WAL Player failed");
+      }
+      conf.unset(WALPlayer.INPUT_FILES_SEPARATOR_KEY);
+      conf.unset(JOB_NAME_CONF_KEY);
+    } catch (IOException e) {
+      throw e;
+    } catch (Exception ee) {
+      throw new IOException("Can not convert from directory " + dirs
+        + " (check Hadoop, HBase and WALPlayer M/R job logs) ", ee);
+    }
+  }
+
+  private void setupTableSplits() throws IOException {
     String fullBackupId =
       getAncestors(backupInfo).stream().filter(bi -> bi.getType() == BackupType.FULL).findFirst()
         .orElseThrow(
@@ -388,28 +342,6 @@ public class IncrementalTableBackupClient extends TableBackupClient {
         SnapshotRegionLocator.setSnapshotManifestDir(conf, manifestDir, tableName);
       }
     }
-
-    try {
-      player.setConf(conf);
-      int result = player.run(playerArgs);
-      if (result != 0) {
-        throw new IOException("WAL Player failed");
-      }
-      conf.unset(WALPlayer.INPUT_FILES_SEPARATOR_KEY);
-      conf.unset(JOB_NAME_CONF_KEY);
-    } catch (IOException e) {
-      throw e;
-    } catch (Exception ee) {
-      throw new IOException("Can not convert from directory " + dirs
-        + " (check Hadoop, HBase and WALPlayer M/R job logs) ", ee);
-    }
-  }
-
-  protected Path getBulkOutputDirForTable(TableName table) {
-    Path tablePath = getBulkOutputDir();
-    tablePath = new Path(tablePath, table.getNamespaceAsString());
-    tablePath = new Path(tablePath, table.getQualifierAsString());
-    return new Path(tablePath, "data");
   }
 
   protected Path getBulkOutputDir() {
