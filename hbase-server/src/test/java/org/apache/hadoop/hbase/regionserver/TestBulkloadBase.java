@@ -152,11 +152,10 @@ public class TestBulkloadBase {
     return familyPaths;
   }
 
-  private String createHFileForFamilies(byte[] family) throws IOException {
+  public static void createHFileForFamilies(Configuration conf, FSDataOutputStream out,
+    byte[] family, byte[] randomBytes) throws IOException {
     HFile.WriterFactory hFileFactory = HFile.getWriterFactoryNoCache(conf);
     // TODO We need a way to do this without creating files
-    File hFileLocation = testFolder.newFile(generateUniqueName(null));
-    FSDataOutputStream out = new FSDataOutputStream(new FileOutputStream(hFileLocation), null);
     try {
       hFileFactory.withOutputStream(out);
       hFileFactory.withFileContext(new HFileContextBuilder().build());
@@ -171,7 +170,13 @@ public class TestBulkloadBase {
     } finally {
       out.close();
     }
-    return hFileLocation.getAbsoluteFile().getAbsolutePath();
+  }
+
+  private String createHFileForFamilies(byte[] family) throws IOException {
+    File hFileLocation = testFolder.newFile(generateUniqueName(null));
+    FSDataOutputStream out = new FSDataOutputStream(new FileOutputStream(hFileLocation), null);
+    createHFileForFamilies(conf, out, family, randomBytes);
+    return hFileLocation.getAbsolutePath();
   }
 
   private static String generateUniqueName(final String suffix) {

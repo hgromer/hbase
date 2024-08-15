@@ -21,19 +21,29 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellBuilderType;
+import org.apache.hadoop.hbase.ExtendedCellBuilder;
+import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtil;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.SingleProcessHBaseCluster;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.impl.BackupAdminImpl;
 import org.apache.hadoop.hbase.backup.impl.BackupManifest;
+import org.apache.hadoop.hbase.backup.impl.BackupSystemTable;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
@@ -43,16 +53,21 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.io.hfile.HFile;
+import org.apache.hadoop.hbase.io.hfile.HFileContextBuilder;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.LogRoller;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.tool.BulkLoadHFilesTool;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.slf4j.Logger;
@@ -68,8 +83,11 @@ public class TestIncrementalBackup extends TestBackupBase {
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
     HBaseClassTestRule.forClass(TestIncrementalBackup.class);
+  @ClassRule
+  public static TemporaryFolder testFolder = new TemporaryFolder();
 
   private static final Logger LOG = LoggerFactory.getLogger(TestIncrementalBackup.class);
+  private static final Path BULK_LOAD_BASE_DIR = new Path("/bulk_dir");
 
   @Parameterized.Parameters
   public static Collection<Object[]> data() {
@@ -320,6 +338,69 @@ public class TestIncrementalBackup extends TestBackupBase {
         false, fromTables, toTables, true, true));
       Assert.assertEquals(HBaseTestingUtil.countRows(table),
         NB_ROWS_IN_BATCH + ROWS_TO_ADD + ROWS_TO_ADD);
+
+      // test bulkloads
+      String famHFile = createHFile(table1, fam1);
+      String mobHFile = createHFile(table1, mobFam);
+
+      BackupSystemTable backupSystemTable = new BackupSystemTable(conn);
+      HRegion bulkLoadedRegion = TEST_UTIL.getHBaseCluster().getRegions(table1).get(0);
+
+      backupSystemTable.writePathsPostBulkLoad(table1,
+        bulkLoadedRegion.getRegionInfo().getRegionName(),
+        Map.of(fam1, List.of(new Path(famHFile)), mobFam, List.of(new Path(mobHFile))));
+      currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
+
+      for (HRegion region : currentRegions) {
+        admin.splitRegionAsync(region.getRegionInfo().getRegionName());
+      }
+
+      while (!admin.isTableAvailable(table1)) {
+        Thread.sleep(100);
+      }
+
+      request = createBackupRequest(BackupType.INCREMENTAL, tables, BACKUP_ROOT_DIR);
+      incrementalBackupId = backupAdmin.backupTables(request);
+      assertTrue(checkSucceeded(incrementalBackupId));
+
+      backupAdmin.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, incrementalBackupId,
+        false, fromTables, toTables, true, true));
+      Assert.assertEquals(HBaseTestingUtil.countRows(table),
+        NB_ROWS_IN_BATCH + ROWS_TO_ADD + ROWS_TO_ADD + 2);
     }
+  }
+
+  private static String createHFile(TableName tn, byte[] fam) throws IOException {
+    byte[] row = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 };
+    ExtendedCellBuilder cellBuilder = ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY);
+    cellBuilder.setRow(row).setFamily(fam).setQualifier(Bytes.toBytes("1")).setValue(row)
+      .setType(Cell.Type.Put);
+
+    HFile.WriterFactory hFileFactory = HFile.getWriterFactoryNoCache(conf1);
+    // TODO We need a way to do this without creating files
+    File hFileLocation = testFolder.newFile();
+    FSDataOutputStream out = new FSDataOutputStream(new FileOutputStream(hFileLocation), null);
+    try {
+      hFileFactory.withOutputStream(out);
+      hFileFactory.withFileContext(new HFileContextBuilder().build());
+      HFile.Writer writer = hFileFactory.create();
+      try {
+        writer.append(new KeyValue(cellBuilder.build()));
+      } finally {
+        writer.close();
+      }
+    } finally {
+      out.close();
+    }
+
+    Path bulkLoadDir = new Path(BULK_LOAD_BASE_DIR, Bytes.toString(fam));
+    String bulkLoadFilePath = hFileLocation.getAbsoluteFile().getAbsolutePath();
+    MiniDFSCluster cluster = TEST_UTIL.getDFSCluster();
+    cluster.getFileSystem().mkdirs(bulkLoadDir);
+    cluster.getFileSystem().copyFromLocalFile(new Path(bulkLoadFilePath), bulkLoadDir);
+
+    BulkLoadHFilesTool bulkLoadHFilesTool = new BulkLoadHFilesTool(conf1);
+    bulkLoadHFilesTool.bulkLoad(tn, BULK_LOAD_BASE_DIR);
+    return bulkLoadFilePath;
   }
 }

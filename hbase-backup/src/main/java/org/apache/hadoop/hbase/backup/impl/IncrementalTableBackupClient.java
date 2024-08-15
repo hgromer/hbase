@@ -124,7 +124,9 @@ public class IncrementalTableBackupClient extends TableBackupClient {
         continue;
       }
       Path tblDir = CommonFSUtils.getTableDir(rootdir, srcTable);
-      List<String> dirs = new ArrayList<>();
+      List<String> activeFiles = new ArrayList<>();
+      List<String> archiveFiles = new ArrayList<>();
+      ;
       for (Map.Entry<String, Map<String, List<Pair<String, Boolean>>>> regionEntry : tblEntry
         .getValue().entrySet()) {
         String regionName = regionEntry.getKey();
@@ -134,19 +136,48 @@ public class IncrementalTableBackupClient extends TableBackupClient {
           .entrySet()) {
           String fam = famEntry.getKey();
           Path famDir = new Path(regionDir, fam);
-          dirs.add(famDir.toString());
+          activeFiles.add(famDir.toString());
           Path archiveDir = HFileArchiveUtil.getStoreArchivePath(conf, srcTable, regionName, fam);
-          dirs.add(archiveDir.toString());
+          archiveFiles.add(archiveDir.toString());
         }
       }
-      mergeSplitBulkloads(dirs, srcTable);
+      mergeSplitBulkloads(activeFiles, archiveFiles, srcTable);
+    }
+  }
+
+  private void mergeSplitBulkloads(List<String> activeFiles, List<String> archiveFiles,
+    TableName tn) throws IOException {
+    int attempt = 1;
+
+    while (!activeFiles.isEmpty()) {
+      LOG.info("MergeSplit {} active bulk loaded files. Attempt={}", activeFiles.size(), attempt++);
+      // Active file can be archived during copy operation,
+      // we need to handle this properly
+      try {
+        mergeSplitBulkloads(activeFiles, tn);
+        break;
+      } catch (IOException e) {
+        int numActiveFiles = activeFiles.size();
+        updateFileLists(activeFiles, archiveFiles);
+        if (activeFiles.size() < numActiveFiles) {
+          continue;
+        }
+
+        throw e;
+      }
+    }
+
+    if (!archiveFiles.isEmpty()) {
+      mergeSplitBulkloads(archiveFiles, tn);
     }
   }
 
   private void mergeSplitBulkloads(List<String> files, TableName tn) throws IOException {
-    String backupDest = backupInfo.getBackupRootDir() + Path.SEPARATOR + backupInfo.getBackupId();
+    String tmpRestoreOutputDir =
+      new Path(HBackupFileSystem.getBackupTmpDirPath(backupInfo.getBackupRootDir()), "bulkloads")
+        .toString();
     MapReduceHFileSplitterJob player = new MapReduceHFileSplitterJob();
-    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, backupDest);
+    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, tmpRestoreOutputDir);
     player.setConf(conf);
 
     String inputDirs = StringUtils.join(files, ",");
@@ -161,6 +192,24 @@ public class IncrementalTableBackupClient extends TableBackupClient {
       LOG.error(e.toString(), e);
       throw new IOException(e);
     }
+  }
+
+  private void updateFileLists(List<String> activeFiles, List<String> archiveFiles)
+    throws IOException {
+    List<String> newlyArchived = new ArrayList<>();
+
+    for (String spath : activeFiles) {
+      if (!fs.exists(new Path(spath))) {
+        newlyArchived.add(spath);
+      }
+    }
+
+    if (newlyArchived.size() > 0) {
+      activeFiles.removeAll(newlyArchived);
+      archiveFiles.addAll(newlyArchived);
+    }
+
+    LOG.debug(newlyArchived.size() + " files have been archived.");
   }
 
   @Override
@@ -183,8 +232,8 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     try {
       // copy out the table and region info files for each table
       BackupUtils.copyTableRegionInfo(conn, backupInfo, conf);
-      // convert WAL to HFiles and copy them to .tmp under BACKUP_ROOT
       setupTableSplits();
+      // convert WAL to HFiles and copy them to .tmp under BACKUP_ROOT
       convertWALsToHFiles();
       incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
         backupInfo.getBackupRootDir());
