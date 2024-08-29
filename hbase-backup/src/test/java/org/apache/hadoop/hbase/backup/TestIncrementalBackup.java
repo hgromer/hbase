@@ -18,19 +18,18 @@
 package org.apache.hadoop.hbase.backup;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
-
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellBuilderType;
@@ -38,7 +37,6 @@ import org.apache.hadoop.hbase.ExtendedCellBuilder;
 import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtil;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.SingleProcessHBaseCluster;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.impl.BackupAdminImpl;
@@ -54,11 +52,13 @@ import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.io.hfile.HFile;
+import org.apache.hadoop.hbase.io.hfile.HFileContext;
 import org.apache.hadoop.hbase.io.hfile.HFileContextBuilder;
+import org.apache.hadoop.hbase.io.hfile.HFileInfo;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.LogRoller;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
-import org.apache.hadoop.hbase.tool.BulkLoadHFilesTool;
+import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -72,7 +72,6 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
@@ -347,7 +346,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       HRegion bulkLoadedRegion = TEST_UTIL.getHBaseCluster().getRegions(table1).get(0);
 
       backupSystemTable.writePathsPostBulkLoad(table1,
-        bulkLoadedRegion.getRegionInfo().getRegionName(),
+        bulkLoadedRegion.getRegionInfo().getEncodedNameAsBytes(),
         Map.of(fam1, List.of(new Path(famHFile)), mobFam, List.of(new Path(mobHFile))));
       currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
 
@@ -375,32 +374,31 @@ public class TestIncrementalBackup extends TestBackupBase {
     ExtendedCellBuilder cellBuilder = ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY);
     cellBuilder.setRow(row).setFamily(fam).setQualifier(Bytes.toBytes("1")).setValue(row)
       .setType(Cell.Type.Put);
-
-    HFile.WriterFactory hFileFactory = HFile.getWriterFactoryNoCache(conf1);
-    // TODO We need a way to do this without creating files
     File hFileLocation = testFolder.newFile();
-    FSDataOutputStream out = new FSDataOutputStream(new FileOutputStream(hFileLocation), null);
-    try {
-      hFileFactory.withOutputStream(out);
-      hFileFactory.withFileContext(new HFileContextBuilder().build());
-      HFile.Writer writer = hFileFactory.create();
-      try {
-        writer.append(new KeyValue(cellBuilder.build()));
-      } finally {
-        writer.close();
-      }
-    } finally {
-      out.close();
+    MiniDFSCluster cluster = TEST_UTIL.getDFSCluster();
+
+    try (HFile.Writer writer = HFile.getWriterFactoryNoCache(conf1)
+      .withPath(cluster.getFileSystem(), new Path(hFileLocation.getAbsolutePath()))
+      .withFileContext(new HFileContextBuilder().withTableName(tn.toBytes()).withColumnFamily(fam).build())
+      .create()
+    ) {
+      writer.append(cellBuilder.build());
     }
 
     Path bulkLoadDir = new Path(BULK_LOAD_BASE_DIR, Bytes.toString(fam));
     String bulkLoadFilePath = hFileLocation.getAbsoluteFile().getAbsolutePath();
-    MiniDFSCluster cluster = TEST_UTIL.getDFSCluster();
     cluster.getFileSystem().mkdirs(bulkLoadDir);
     cluster.getFileSystem().copyFromLocalFile(new Path(bulkLoadFilePath), bulkLoadDir);
 
-    BulkLoadHFilesTool bulkLoadHFilesTool = new BulkLoadHFilesTool(conf1);
-    bulkLoadHFilesTool.bulkLoad(tn, BULK_LOAD_BASE_DIR);
+    try(HFile.Reader reader = HFile.createReader(cluster.getFileSystem(), new Path(hFileLocation.getAbsolutePath()), conf1)) {
+      HFileInfo info = reader.getHFileInfo();
+      HFileContext context = reader.getFileContext();
+      System.out.println(info);
+      System.out.println(context);
+    }
+
+    Map<BulkLoadHFiles.LoadQueueItem, ByteBuffer> results =  BulkLoadHFiles.create(conf1).bulkLoad(tn, BULK_LOAD_BASE_DIR);
+    assertFalse(results.isEmpty());
     return bulkLoadFilePath;
   }
 }
