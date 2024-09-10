@@ -21,7 +21,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
-import java.io.File;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -30,10 +30,13 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellBuilderType;
-import org.apache.hadoop.hbase.ExtendedCellBuilder;
+import org.apache.hadoop.hbase.ExtendedCell;
 import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtil;
@@ -48,20 +51,23 @@ import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.io.hfile.HFile;
-import org.apache.hadoop.hbase.io.hfile.HFileContext;
 import org.apache.hadoop.hbase.io.hfile.HFileContextBuilder;
-import org.apache.hadoop.hbase.io.hfile.HFileInfo;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.LogRoller;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
+import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hbase.thirdparty.org.glassfish.jersey.server.internal.scanning.FilesScanner;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -72,6 +78,7 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
@@ -86,7 +93,6 @@ public class TestIncrementalBackup extends TestBackupBase {
   public static TemporaryFolder testFolder = new TemporaryFolder();
 
   private static final Logger LOG = LoggerFactory.getLogger(TestIncrementalBackup.class);
-  private static final Path BULK_LOAD_BASE_DIR = new Path("/bulk_dir");
 
   @Parameterized.Parameters
   public static Collection<Object[]> data() {
@@ -319,7 +325,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       Admin admin = conn.getAdmin();
       List<HRegion> currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
       for (HRegion region : currentRegions) {
-        byte[] name = region.getRegionInfo().getRegionName();
+        byte[] name = region.getRegionInfo().getEncodedNameAsBytes();
         admin.splitRegionAsync(name).get();
       }
 
@@ -327,7 +333,7 @@ public class TestIncrementalBackup extends TestBackupBase {
         Thread.sleep(100);
       }
 
-      // Make sure we've split regions
+//       Make sure we've split regions
       assertNotEquals(currentRegions, TEST_UTIL.getHBaseCluster().getRegions(table1));
 
       request = createBackupRequest(BackupType.INCREMENTAL, tables, BACKUP_ROOT_DIR);
@@ -339,11 +345,13 @@ public class TestIncrementalBackup extends TestBackupBase {
         NB_ROWS_IN_BATCH + ROWS_TO_ADD + ROWS_TO_ADD);
 
       // test bulkloads
-      String famHFile = createHFile(table1, fam1);
-      String mobHFile = createHFile(table1, mobFam);
+      HRegion bulkLoadedRegion = TEST_UTIL.getHBaseCluster().getRegions(table1).get(0);
+      String regionName = bulkLoadedRegion.getRegionInfo().getEncodedName();
+      String famHFile = createHFile(table1, fam1, regionName);
+      String mobHFile = createHFile(table1, mobFam, regionName);
+      doBulkload(table1, regionName);
 
       BackupSystemTable backupSystemTable = new BackupSystemTable(conn);
-      HRegion bulkLoadedRegion = TEST_UTIL.getHBaseCluster().getRegions(table1).get(0);
 
       backupSystemTable.writePathsPostBulkLoad(table1,
         bulkLoadedRegion.getRegionInfo().getEncodedNameAsBytes(),
@@ -351,7 +359,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
 
       for (HRegion region : currentRegions) {
-        admin.splitRegionAsync(region.getRegionInfo().getRegionName());
+        admin.splitRegionAsync(region.getRegionInfo().getEncodedNameAsBytes());
       }
 
       while (!admin.isTableAvailable(table1)) {
@@ -369,36 +377,33 @@ public class TestIncrementalBackup extends TestBackupBase {
     }
   }
 
-  private static String createHFile(TableName tn, byte[] fam) throws IOException {
-    byte[] row = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 };
-    ExtendedCellBuilder cellBuilder = ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY);
-    cellBuilder.setRow(row).setFamily(fam).setQualifier(Bytes.toBytes("1")).setValue(row)
-      .setType(Cell.Type.Put);
-    File hFileLocation = testFolder.newFile();
-    MiniDFSCluster cluster = TEST_UTIL.getDFSCluster();
+  private static String createHFile(TableName tn, byte[] fam, String regionName) throws IOException {
+    byte[] row = Bytes.toBytes(UUID.randomUUID().toString());
+    Path rootdir = CommonFSUtils.getRootDir(conf1);
+    Path regionDir = CommonFSUtils.getRegionDir(rootdir, tn, regionName);
+    Path bulkLoadDir = new Path(regionDir, Bytes.toString(fam));
 
-    try (HFile.Writer writer = HFile.getWriterFactoryNoCache(conf1)
-      .withPath(cluster.getFileSystem(), new Path(hFileLocation.getAbsolutePath()))
-      .withFileContext(new HFileContextBuilder().withTableName(tn.toBytes()).withColumnFamily(fam).build())
-      .create()
-    ) {
-      writer.append(cellBuilder.build());
+    ExtendedCell cell = ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(row)
+      .setFamily(fam).setQualifier(Bytes.toBytes("1")).setValue(row).setType(Cell.Type.Put).build();
+    FileSystem fs = FileSystem.get(TEST_UTIL.getConfiguration());
+    fs.mkdirs(rootdir);
+    Path hFileLocation = new Path(bulkLoadDir, UUID.randomUUID().toString());
+
+    try (HFile.Writer writer =
+      HFile.getWriterFactoryNoCache(conf1).withPath(fs, hFileLocation)
+        .withFileContext(
+          new HFileContextBuilder().withTableName(tn.toBytes()).withColumnFamily(fam).build())
+        .create()) {
+      writer.append(cell);
     }
+    return hFileLocation.toString();
+  }
 
-    Path bulkLoadDir = new Path(BULK_LOAD_BASE_DIR, Bytes.toString(fam));
-    String bulkLoadFilePath = hFileLocation.getAbsoluteFile().getAbsolutePath();
-    cluster.getFileSystem().mkdirs(bulkLoadDir);
-    cluster.getFileSystem().copyFromLocalFile(new Path(bulkLoadFilePath), bulkLoadDir);
-
-    try(HFile.Reader reader = HFile.createReader(cluster.getFileSystem(), new Path(hFileLocation.getAbsolutePath()), conf1)) {
-      HFileInfo info = reader.getHFileInfo();
-      HFileContext context = reader.getFileContext();
-      System.out.println(info);
-      System.out.println(context);
-    }
-
-    Map<BulkLoadHFiles.LoadQueueItem, ByteBuffer> results =  BulkLoadHFiles.create(conf1).bulkLoad(tn, BULK_LOAD_BASE_DIR);
+  private static void doBulkload(TableName tn, String regionName) throws IOException {
+    Path rootdir = CommonFSUtils.getRootDir(conf1);
+    Path regionDir = CommonFSUtils.getRegionDir(rootdir, tn, regionName);
+    Map<BulkLoadHFiles.LoadQueueItem, ByteBuffer> results =
+      BulkLoadHFiles.create(conf1).bulkLoad(tn, regionDir);
     assertFalse(results.isEmpty());
-    return bulkLoadFilePath;
   }
 }

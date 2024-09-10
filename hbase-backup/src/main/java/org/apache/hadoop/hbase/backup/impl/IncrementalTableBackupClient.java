@@ -128,7 +128,6 @@ public class IncrementalTableBackupClient extends TableBackupClient {
       Path tblDir = CommonFSUtils.getTableDir(rootdir, srcTable);
       List<String> activeFiles = new ArrayList<>();
       List<String> archiveFiles = new ArrayList<>();
-      ;
       for (Map.Entry<String, Map<String, List<Pair<String, Boolean>>>> regionEntry : tblEntry
         .getValue().entrySet()) {
         String regionName = regionEntry.getKey();
@@ -137,10 +136,17 @@ public class IncrementalTableBackupClient extends TableBackupClient {
         for (Map.Entry<String, List<Pair<String, Boolean>>> famEntry : regionEntry.getValue()
           .entrySet()) {
           String fam = famEntry.getKey();
+          if (fam.equals("mob")) {
+            // TODO REMOVE
+            continue;
+          }
           Path famDir = new Path(regionDir, fam);
           activeFiles.add(famDir.toString());
           Path archiveDir = HFileArchiveUtil.getStoreArchivePath(conf, srcTable, regionName, fam);
-          archiveFiles.add(archiveDir.toString());
+          if (fs.exists(archiveDir)) {
+            // TODO - Is this necessary?
+            archiveFiles.add(archiveDir.toString());
+          }
         }
       }
       mergeSplitBulkloads(activeFiles, archiveFiles, srcTable);
@@ -177,11 +183,12 @@ public class IncrementalTableBackupClient extends TableBackupClient {
   }
 
   private void mergeSplitBulkloads(List<String> files, TableName tn) throws IOException {
-    String tmpRestoreOutputDir =
-      new Path(HBackupFileSystem.getBackupTmpDirPath(backupInfo.getBackupRootDir()), "bulkloads")
-        .toString();
+    Path tmpRestoreOutputDir =
+      new Path(HBackupFileSystem.getBackupTmpDirPath(backupInfo.getBackupRootDir()), "bulkloads");
+    Path bulkOutputPath = BackupUtils.getBulkOutputDir(tmpRestoreOutputDir,
+      BackupUtils.getFileNameCompatibleString(tn), conf, false);
     MapReduceHFileSplitterJob player = new MapReduceHFileSplitterJob();
-    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, tmpRestoreOutputDir);
+    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, bulkOutputPath.toString());
     player.setConf(conf);
 
     String inputDirs = StringUtils.join(files, ",");
