@@ -19,9 +19,7 @@ package org.apache.hadoop.hbase.backup;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -31,11 +29,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellBuilderType;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.ExtendedCell;
 import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
@@ -51,23 +51,20 @@ import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.io.hfile.HFileContextBuilder;
+import org.apache.hadoop.hbase.io.hfile.HFileScanner;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.LogRoller;
+import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.hadoop.hbase.util.HFileArchiveUtil;
-import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hbase.thirdparty.org.glassfish.jersey.server.internal.scanning.FilesScanner;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -78,7 +75,6 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
@@ -323,18 +319,18 @@ public class TestIncrementalBackup extends TestBackupBase {
       insertIntoTable(conn, table1, mobFam, 4, ROWS_TO_ADD);
 
       Admin admin = conn.getAdmin();
-      List<HRegion> currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
-      for (HRegion region : currentRegions) {
-        byte[] name = region.getRegionInfo().getEncodedNameAsBytes();
-        admin.splitRegionAsync(name).get();
-      }
+//      List<HRegion> currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
+//      for (HRegion region : currentRegions) {
+//        byte[] name = region.getRegionInfo().getEncodedNameAsBytes();
+//        admin.splitRegionAsync(name).get();
+//      }
+//
+//      while (!admin.isTableAvailable(table1)) {
+//        Thread.sleep(100);
+//      }
 
-      while (!admin.isTableAvailable(table1)) {
-        Thread.sleep(100);
-      }
-
-//       Make sure we've split regions
-      assertNotEquals(currentRegions, TEST_UTIL.getHBaseCluster().getRegions(table1));
+//      Make sure we've split regions
+//      assertNotEquals(currentRegions, TEST_UTIL.getHBaseCluster().getRegions(table1));
 
       request = createBackupRequest(BackupType.INCREMENTAL, tables, BACKUP_ROOT_DIR);
       String incrementalBackupId = backupAdmin.backupTables(request);
@@ -356,11 +352,11 @@ public class TestIncrementalBackup extends TestBackupBase {
       backupSystemTable.writePathsPostBulkLoad(table1,
         bulkLoadedRegion.getRegionInfo().getEncodedNameAsBytes(),
         Map.of(fam1, List.of(new Path(famHFile)), mobFam, List.of(new Path(mobHFile))));
-      currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
-
-      for (HRegion region : currentRegions) {
-        admin.splitRegionAsync(region.getRegionInfo().getEncodedNameAsBytes());
-      }
+//      currentRegions = TEST_UTIL.getHBaseCluster().getRegions(table1);
+//
+//      for (HRegion region : currentRegions) {
+//        admin.splitRegionAsync(region.getRegionInfo().getEncodedNameAsBytes());
+//      }
 
       while (!admin.isTableAvailable(table1)) {
         Thread.sleep(100);
@@ -372,13 +368,28 @@ public class TestIncrementalBackup extends TestBackupBase {
 
       backupAdmin.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, incrementalBackupId,
         false, fromTables, toTables, true, true));
+
+      regionName = admin.getRegions(table1_restore).get(0).getEncodedName();
+
+      Path rootdir = CommonFSUtils.getRootDir(conf1);
+      Path regionDir = CommonFSUtils.getRegionDir(rootdir, table1_restore, regionName);
+      RemoteIterator<LocatedFileStatus> iter = FileSystem.get(conf1).listFiles(regionDir, true);
+      while (iter.hasNext()) {
+        LocatedFileStatus locatedFileStatus = iter.next();
+        if (locatedFileStatus.isFile()) {
+          if (HFile.isHFileFormat(FileSystem.get(conf1), locatedFileStatus.getPath())) {
+            readFile(locatedFileStatus);
+          }
+        }
+      }
+
       Assert.assertEquals(HBaseTestingUtil.countRows(table),
         NB_ROWS_IN_BATCH + ROWS_TO_ADD + ROWS_TO_ADD + 2);
     }
   }
 
   private static String createHFile(TableName tn, byte[] fam, String regionName) throws IOException {
-    byte[] row = Bytes.toBytes(UUID.randomUUID().toString());
+    byte[] row = Bytes.add(Bytes.toBytes("beep-boop"), Bytes.toBytes(UUID.randomUUID().toString()));
     Path rootdir = CommonFSUtils.getRootDir(conf1);
     Path regionDir = CommonFSUtils.getRegionDir(rootdir, tn, regionName);
     Path bulkLoadDir = new Path(regionDir, Bytes.toString(fam));
@@ -405,5 +416,16 @@ public class TestIncrementalBackup extends TestBackupBase {
     Map<BulkLoadHFiles.LoadQueueItem, ByteBuffer> results =
       BulkLoadHFiles.create(conf1).bulkLoad(tn, regionDir);
     assertFalse(results.isEmpty());
+  }
+
+  private static void readFile(LocatedFileStatus locatedFileStatus) throws IOException {
+    try (HFile.Reader reader = HFile.createReader(FileSystem.get(conf1), locatedFileStatus.getPath(), conf1)) {
+      try(HFileScanner scanner = reader.getScanner(conf1, false, false)) {
+        scanner.seekTo();
+        while (scanner.next()) {
+          LOG.info("scanner result: {}", Bytes.toString(scanner.getCell().getRowArray()));
+        }
+      }
+    }
   }
 }

@@ -18,7 +18,6 @@
 package org.apache.hadoop.hbase.backup.impl;
 
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.JOB_NAME_CONF_KEY;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,7 +25,9 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupCopyJob;
 import org.apache.hadoop.hbase.backup.BackupInfo;
@@ -46,6 +47,7 @@ import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
+import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.util.Tool;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -136,20 +138,42 @@ public class IncrementalTableBackupClient extends TableBackupClient {
         for (Map.Entry<String, List<Pair<String, Boolean>>> famEntry : regionEntry.getValue()
           .entrySet()) {
           String fam = famEntry.getKey();
-          if (fam.equals("mob")) {
-            // TODO REMOVE
-            continue;
-          }
           Path famDir = new Path(regionDir, fam);
           activeFiles.add(famDir.toString());
+
+          // Next, we need to find all the HFiles
+
           Path archiveDir = HFileArchiveUtil.getStoreArchivePath(conf, srcTable, regionName, fam);
           if (fs.exists(archiveDir)) {
             // TODO - Is this necessary?
             archiveFiles.add(archiveDir.toString());
           }
         }
+
       }
       mergeSplitBulkloads(activeFiles, archiveFiles, srcTable);
+      RemoteIterator<LocatedFileStatus> iter = fs.listFiles(getBulkOutputDir(), true);
+      while (iter.hasNext()) {
+        LOG.info("MergeSplit target: {}", iter.next());
+      }
+    }
+
+    // TODO - Maybe the check should be more explicit
+    if (fs.exists(getBulkOutputDir())) {
+      RemoteIterator<LocatedFileStatus> iter = fs.listFiles(getBulkOutputDir(), true);
+      while (iter.hasNext()) {
+        LocatedFileStatus fileStatus = iter.next();
+        LOG.info("Found bulkload (source) file {}", fileStatus);
+      }
+
+      incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
+        backupInfo.getBackupRootDir());
+
+      iter = fs.listFiles(new Path(backupInfo.getBackupRootDir()), true);
+      while (iter.hasNext()) {
+        LocatedFileStatus fileStatus = iter.next();
+        LOG.info("Found bulkload (target) file {}", fileStatus);
+      }
     }
 
     return pair.getSecond();
@@ -183,12 +207,8 @@ public class IncrementalTableBackupClient extends TableBackupClient {
   }
 
   private void mergeSplitBulkloads(List<String> files, TableName tn) throws IOException {
-    Path tmpRestoreOutputDir =
-      new Path(HBackupFileSystem.getBackupTmpDirPath(backupInfo.getBackupRootDir()), "bulkloads");
-    Path bulkOutputPath = BackupUtils.getBulkOutputDir(tmpRestoreOutputDir,
-      BackupUtils.getFileNameCompatibleString(tn), conf, false);
     MapReduceHFileSplitterJob player = new MapReduceHFileSplitterJob();
-    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, bulkOutputPath.toString());
+    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, getBulkOutputDir().toString());
     player.setConf(conf);
 
     String inputDirs = StringUtils.join(files, ",");
@@ -291,6 +311,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     try {
       LOG.debug("Incremental copy HFiles is starting. dest=" + backupDest);
       // set overall backup phase: incremental_copy
+      // TODO - This should now happen elsewhere maybe
       backupInfo.setPhase(BackupPhase.INCREMENTAL_COPY);
       // get incremental backup file list and prepare parms for DistCp
       String[] strArr = new String[files.length + 1];
