@@ -148,6 +148,11 @@ public class IncrementalTableBackupClient extends TableBackupClient {
             // TODO - Is this necessary?
             archiveFiles.add(archiveDir.toString());
           }
+
+          RemoteIterator<LocatedFileStatus> iter = fs.listFiles(famDir, true);
+          while (iter.hasNext()) {
+            LOG.info("Found file to bulkload: {}", iter.next());
+          }
         }
 
       }
@@ -155,6 +160,24 @@ public class IncrementalTableBackupClient extends TableBackupClient {
       RemoteIterator<LocatedFileStatus> iter = fs.listFiles(getBulkOutputDir(), true);
       while (iter.hasNext()) {
         LOG.info("MergeSplit target: {}", iter.next());
+      }
+    }
+
+    // TODO - Maybe the check should be more explicit
+    if (fs.exists(getBulkOutputDir())) {
+      RemoteIterator<LocatedFileStatus> iter = fs.listFiles(getBulkOutputDir(), true);
+      while (iter.hasNext()) {
+        LocatedFileStatus fileStatus = iter.next();
+        LOG.info("Found bulkload (source) file {}", fileStatus);
+      }
+
+      incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
+        backupInfo.getBackupRootDir());
+
+      iter = fs.listFiles(new Path(backupInfo.getBackupRootDir()), true);
+      while (iter.hasNext()) {
+        LocatedFileStatus fileStatus = iter.next();
+        LOG.info("Found bulkload (target) file {}", fileStatus);
       }
     }
 

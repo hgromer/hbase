@@ -35,7 +35,6 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellBuilderType;
-import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.ExtendedCell;
 import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
@@ -398,7 +397,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       .setFamily(fam).setQualifier(Bytes.toBytes("1")).setValue(row).setType(Cell.Type.Put).build();
     FileSystem fs = FileSystem.get(TEST_UTIL.getConfiguration());
     fs.mkdirs(rootdir);
-    Path hFileLocation = new Path(bulkLoadDir, UUID.randomUUID().toString());
+    Path hFileLocation = new Path(bulkLoadDir, UUID.randomUUID() + StoreFileInfo.formatBulkloadSeqId(15));
 
     try (HFile.Writer writer =
       HFile.getWriterFactoryNoCache(conf1).withPath(fs, hFileLocation)
