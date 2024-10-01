@@ -18,15 +18,11 @@
 package org.apache.hadoop.hbase.backup.impl;
 
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.JOB_NAME_CONF_KEY;
-
 import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -38,14 +34,13 @@ import org.apache.hadoop.hbase.backup.BackupRequest;
 import org.apache.hadoop.hbase.backup.BackupRestoreFactory;
 import org.apache.hadoop.hbase.backup.BackupType;
 import org.apache.hadoop.hbase.backup.HBackupFileSystem;
-import org.apache.hadoop.hbase.backup.mapreduce.MapReduceBackupCopyJob;
+import org.apache.hadoop.hbase.backup.mapreduce.MapReduceHFileSplitterJob;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.mapreduce.WALPlayer;
 import org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils;
 import org.apache.hadoop.hbase.snapshot.SnapshotRegionLocator;
-import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.hadoop.hbase.util.Pair;
@@ -115,20 +110,10 @@ public class IncrementalTableBackupClient extends TableBackupClient {
    */
   @SuppressWarnings("unchecked")
   protected List<byte[]> handleBulkLoad(List<TableName> sTableList) throws IOException {
-    Map<byte[], List<Path>>[] mapForSrc = new Map[sTableList.size()];
-    List<String> activeFiles = new ArrayList<>();
-    List<String> archiveFiles = new ArrayList<>();
     Pair<Map<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>>, List<byte[]>> pair =
       backupManager.readBulkloadRows(sTableList);
     Map<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>> map = pair.getFirst();
-    FileSystem tgtFs;
-    try {
-      tgtFs = FileSystem.get(new URI(backupInfo.getBackupRootDir()), conf);
-    } catch (URISyntaxException use) {
-      throw new IOException("Unable to get FileSystem", use);
-    }
     Path rootdir = CommonFSUtils.getRootDir(conf);
-    Path tgtRoot = new Path(new Path(backupInfo.getBackupRootDir()), backupId);
 
     for (Map.Entry<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>> tblEntry : map
       .entrySet()) {
@@ -139,12 +124,9 @@ public class IncrementalTableBackupClient extends TableBackupClient {
         LOG.warn("Couldn't find " + srcTable + " in source table List");
         continue;
       }
-      if (mapForSrc[srcIdx] == null) {
-        mapForSrc[srcIdx] = new TreeMap<>(Bytes.BYTES_COMPARATOR);
-      }
       Path tblDir = CommonFSUtils.getTableDir(rootdir, srcTable);
-      Path tgtTable = new Path(new Path(tgtRoot, srcTable.getNamespaceAsString()),
-        srcTable.getQualifierAsString());
+      List<String> activeFiles = new ArrayList<>();
+      List<String> archiveFiles = new ArrayList<>();
       for (Map.Entry<String, Map<String, List<Pair<String, Boolean>>>> regionEntry : tblEntry
         .getValue().entrySet()) {
         String regionName = regionEntry.getKey();
@@ -154,94 +136,73 @@ public class IncrementalTableBackupClient extends TableBackupClient {
           .entrySet()) {
           String fam = famEntry.getKey();
           Path famDir = new Path(regionDir, fam);
-          List<Path> files;
-          if (!mapForSrc[srcIdx].containsKey(Bytes.toBytes(fam))) {
-            files = new ArrayList<>();
-            mapForSrc[srcIdx].put(Bytes.toBytes(fam), files);
-          } else {
-            files = mapForSrc[srcIdx].get(Bytes.toBytes(fam));
-          }
+          activeFiles.add(famDir.toString());
+
+          // Next, we need to find all the HFiles
+
           Path archiveDir = HFileArchiveUtil.getStoreArchivePath(conf, srcTable, regionName, fam);
-          String tblName = srcTable.getQualifierAsString();
-          Path tgtFam = new Path(new Path(tgtTable, regionName), fam);
-          if (!tgtFs.mkdirs(tgtFam)) {
-            throw new IOException("couldn't create " + tgtFam);
-          }
-          for (Pair<String, Boolean> fileWithState : famEntry.getValue()) {
-            String file = fileWithState.getFirst();
-            int idx = file.lastIndexOf("/");
-            String filename = file;
-            if (idx > 0) {
-              filename = file.substring(idx + 1);
-            }
-            Path p = new Path(famDir, filename);
-            Path tgt = new Path(tgtFam, filename);
-            Path archive = new Path(archiveDir, filename);
-            if (fs.exists(p)) {
-              if (LOG.isTraceEnabled()) {
-                LOG.trace("found bulk hfile " + file + " in " + famDir + " for " + tblName);
-              }
-              if (LOG.isTraceEnabled()) {
-                LOG.trace("copying " + p + " to " + tgt);
-              }
-              activeFiles.add(p.toString());
-            } else if (fs.exists(archive)) {
-              LOG.debug("copying archive " + archive + " to " + tgt);
-              archiveFiles.add(archive.toString());
-            }
-            files.add(tgt);
+          if (fs.exists(archiveDir)) {
+            // TODO - Is this necessary?
+            archiveFiles.add(archiveDir.toString());
           }
         }
+
       }
+      mergeSplitBulkloads(activeFiles, archiveFiles, srcTable);
     }
 
-    copyBulkLoadedFiles(activeFiles, archiveFiles);
+    // TODO - Maybe the check should be more explicit
+    if (fs.exists(getBulkOutputDir())) {
+      incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
+        backupInfo.getBackupRootDir());
+    }
 
     return pair.getSecond();
   }
 
-  private void copyBulkLoadedFiles(List<String> activeFiles, List<String> archiveFiles)
-    throws IOException {
-    try {
-      // Enable special mode of BackupDistCp
-      conf.setInt(MapReduceBackupCopyJob.NUMBER_OF_LEVELS_TO_PRESERVE_KEY, 5);
-      // Copy active files
-      String tgtDest = backupInfo.getBackupRootDir() + Path.SEPARATOR + backupInfo.getBackupId();
-      int attempt = 1;
-      while (activeFiles.size() > 0) {
-        LOG.info("Copy " + activeFiles.size() + " active bulk loaded files. Attempt =" + attempt++);
-        String[] toCopy = new String[activeFiles.size()];
-        activeFiles.toArray(toCopy);
-        // Active file can be archived during copy operation,
-        // we need to handle this properly
-        try {
-          incrementalCopyHFiles(toCopy, tgtDest);
-          break;
-        } catch (IOException e) {
-          // Check if some files got archived
-          // Update active and archived lists
-          // When file is being moved from active to archive
-          // directory, the number of active files decreases
-          int numOfActive = activeFiles.size();
-          updateFileLists(activeFiles, archiveFiles);
-          if (activeFiles.size() < numOfActive) {
-            continue;
-          }
-          // if not - throw exception
-          throw e;
+  private void mergeSplitBulkloads(List<String> activeFiles, List<String> archiveFiles,
+    TableName tn) throws IOException {
+    int attempt = 1;
+
+    while (!activeFiles.isEmpty()) {
+      LOG.info("MergeSplit {} active bulk loaded files. Attempt={}", activeFiles.size(), attempt++);
+      // Active file can be archived during copy operation,
+      // we need to handle this properly
+      try {
+        mergeSplitBulkloads(activeFiles, tn);
+        break;
+      } catch (IOException e) {
+        int numActiveFiles = activeFiles.size();
+        updateFileLists(activeFiles, archiveFiles);
+        if (activeFiles.size() < numActiveFiles) {
+          continue;
         }
+
+        throw e;
       }
-      // If incremental copy will fail for archived files
-      // we will have partially loaded files in backup destination (only files from active data
-      // directory). It is OK, because the backup will marked as FAILED and data will be cleaned up
-      if (archiveFiles.size() > 0) {
-        String[] toCopy = new String[archiveFiles.size()];
-        archiveFiles.toArray(toCopy);
-        incrementalCopyHFiles(toCopy, tgtDest);
+    }
+
+    if (!archiveFiles.isEmpty()) {
+      mergeSplitBulkloads(archiveFiles, tn);
+    }
+  }
+
+  private void mergeSplitBulkloads(List<String> files, TableName tn) throws IOException {
+    MapReduceHFileSplitterJob player = new MapReduceHFileSplitterJob();
+    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, getBulkOutputDir().toString());
+    player.setConf(conf);
+
+    String inputDirs = StringUtils.join(files, ",");
+    String[] args = { inputDirs, tn.getNameAsString() };
+
+    try {
+      int result = player.run(args);
+      if (result != 0) {
+        throw new RuntimeException("Failed to run MapReduceHFileSplitterJob");
       }
-    } finally {
-      // Disable special mode of BackupDistCp
-      conf.unset(MapReduceBackupCopyJob.NUMBER_OF_LEVELS_TO_PRESERVE_KEY);
+    } catch (Exception e) {
+      LOG.error(e.toString(), e);
+      throw new IOException(e);
     }
   }
 
@@ -331,6 +292,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     try {
       LOG.debug("Incremental copy HFiles is starting. dest=" + backupDest);
       // set overall backup phase: incremental_copy
+      // TODO - This should now happen elsewhere maybe
       backupInfo.setPhase(BackupPhase.INCREMENTAL_COPY);
       // get incremental backup file list and prepare parms for DistCp
       String[] strArr = new String[files.length + 1];
