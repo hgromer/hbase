@@ -32,15 +32,19 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupCopyJob;
+import org.apache.hadoop.hbase.backup.BackupInfo;
 import org.apache.hadoop.hbase.backup.BackupInfo.BackupPhase;
 import org.apache.hadoop.hbase.backup.BackupRequest;
 import org.apache.hadoop.hbase.backup.BackupRestoreFactory;
 import org.apache.hadoop.hbase.backup.BackupType;
+import org.apache.hadoop.hbase.backup.HBackupFileSystem;
 import org.apache.hadoop.hbase.backup.mapreduce.MapReduceBackupCopyJob;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.mapreduce.WALPlayer;
+import org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils;
+import org.apache.hadoop.hbase.snapshot.SnapshotRegionLocator;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
@@ -279,6 +283,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     try {
       // copy out the table and region info files for each table
       BackupUtils.copyTableRegionInfo(conn, backupInfo, conf);
+      setupRegionLocator();
       // convert WAL to HFiles and copy them to .tmp under BACKUP_ROOT
       convertWALsToHFiles();
       incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
@@ -433,5 +438,26 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     path = new Path(path, ".tmp");
     path = new Path(path, backupId);
     return path;
+  }
+
+  private void setupRegionLocator() throws IOException {
+    String fullBackupId =
+      getAncestors(backupInfo).stream().filter(bi -> bi.getType() == BackupType.FULL).findFirst()
+        .orElseThrow(
+          () -> new RuntimeException("Could not find a full backup for backup " + backupId))
+        .getBackupId();
+
+    try (BackupAdminImpl backupAdmin = new BackupAdminImpl(conn)) {
+      BackupInfo fullBackupInfo = backupAdmin.getBackupInfo(fullBackupId);
+
+      for (TableName tableName : fullBackupInfo.getTableNames()) {
+        String snapshotName = fullBackupInfo.getSnapshotName(tableName);
+        Path root = HBackupFileSystem.getTableBackupPath(tableName,
+          new Path(fullBackupInfo.getBackupRootDir()), fullBackupId);
+        String manifestDir =
+          SnapshotDescriptionUtils.getCompletedSnapshotDir(snapshotName, root).toString();
+        SnapshotRegionLocator.setSnapshotManifestDir(conf, manifestDir, tableName);
+      }
+    }
   }
 }

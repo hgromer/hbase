@@ -152,7 +152,8 @@ public class RestoreTool {
    * @throws IOException exception
    */
   public void incrementalRestoreTable(Connection conn, Path tableBackupPath, Path[] logDirs,
-    TableName[] tableNames, TableName[] newTableNames, String incrBackupId) throws IOException {
+    TableName[] tableNames, TableName[] newTableNames, String incrBackupId,
+    boolean keepOriginalSplits) throws IOException {
     try (Admin admin = conn.getAdmin()) {
       if (tableNames.length != newTableNames.length) {
         throw new IOException("Number of source tables and target tables does not match!");
@@ -200,6 +201,7 @@ public class RestoreTool {
           LOG.info("Changed " + newTableDescriptor.getTableName() + " to: " + newTableDescriptor);
         }
       }
+      conf.setBoolean(RestoreJob.KEEP_ORIGINAL_SPLITS_OPT, keepOriginalSplits);
       RestoreJob restoreService = BackupRestoreFactory.getRestoreJob(conf);
 
       restoreService.run(logDirs, tableNames, restoreRootDir, newTableNames, false);
@@ -207,9 +209,10 @@ public class RestoreTool {
   }
 
   public void fullRestoreTable(Connection conn, Path tableBackupPath, TableName tableName,
-    TableName newTableName, boolean truncateIfExists, String lastIncrBackupId) throws IOException {
+    TableName newTableName, boolean truncateIfExists, boolean isKeepOriginalSplits,
+    String lastIncrBackupId) throws IOException {
     createAndRestoreTable(conn, tableName, newTableName, tableBackupPath, truncateIfExists,
-      lastIncrBackupId);
+      isKeepOriginalSplits, lastIncrBackupId);
   }
 
   /**
@@ -283,7 +286,8 @@ public class RestoreTool {
   }
 
   private void createAndRestoreTable(Connection conn, TableName tableName, TableName newTableName,
-    Path tableBackupPath, boolean truncateIfExists, String lastIncrBackupId) throws IOException {
+    Path tableBackupPath, boolean truncateIfExists, boolean isKeepOriginalSplits,
+    String lastIncrBackupId) throws IOException {
     if (newTableName == null) {
       newTableName = tableName;
     }
@@ -349,6 +353,7 @@ public class RestoreTool {
       // should only try to create the table with all region informations, so we could pre-split
       // the regions in fine grain
       checkAndCreateTable(conn, newTableName, regionPathList, tableDescriptor, truncateIfExists);
+      conf.setBoolean(RestoreJob.KEEP_ORIGINAL_SPLITS_OPT, isKeepOriginalSplits);
       RestoreJob restoreService = BackupRestoreFactory.getRestoreJob(conf);
       Path[] paths = new Path[regionPathList.size()];
       regionPathList.toArray(paths);
