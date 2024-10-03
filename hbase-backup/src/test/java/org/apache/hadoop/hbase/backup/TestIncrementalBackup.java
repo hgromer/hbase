@@ -18,8 +18,10 @@
 package org.apache.hadoop.hbase.backup;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -31,6 +33,7 @@ import org.apache.hadoop.hbase.SingleProcessHBaseCluster;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.impl.BackupAdminImpl;
 import org.apache.hadoop.hbase.backup.impl.BackupManifest;
+import org.apache.hadoop.hbase.backup.impl.ColumnFamilyMismatchException;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
@@ -53,6 +56,7 @@ import org.junit.runners.Parameterized;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Throwables;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
@@ -102,9 +106,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       insertIntoTable(conn, table1, mobName, 3, NB_ROWS_FAM3).close();
       Admin admin = conn.getAdmin();
       BackupAdminImpl client = new BackupAdminImpl(conn);
-      BackupRequest request = createBackupRequest(BackupType.FULL, tables, BACKUP_ROOT_DIR);
-      String backupIdFull = client.backupTables(request);
-      assertTrue(checkSucceeded(backupIdFull));
+      String backupIdFull = takeFullBackup(tables, client);
 
       // #2 - insert some data to table
       Table t1 = insertIntoTable(conn, table1, famName, 1, ADD_ROWS);
@@ -150,7 +152,7 @@ public class TestIncrementalBackup extends TestBackupBase {
 
       // #3 - incremental backup for multiple tables
       tables = Lists.newArrayList(table1, table2);
-      request = createBackupRequest(BackupType.INCREMENTAL, tables, BACKUP_ROOT_DIR);
+      BackupRequest request = createBackupRequest(BackupType.INCREMENTAL, tables, BACKUP_ROOT_DIR);
       String backupIdIncMultiple = client.backupTables(request);
       assertTrue(checkSucceeded(backupIdIncMultiple));
       BackupManifest manifest =
@@ -164,6 +166,13 @@ public class TestIncrementalBackup extends TestBackupBase {
         .setColumnFamily(ColumnFamilyDescriptorBuilder.of(fam2Name)).removeColumnFamily(fam3Name)
         .build();
       TEST_UTIL.getAdmin().modifyTable(newTable1Desc);
+
+      // check that an incremental backup fails because the CFs don't match
+      final List<TableName> tablesCopy = tables;
+      IOException ex = assertThrows(IOException.class, () -> client
+        .backupTables(createBackupRequest(BackupType.INCREMENTAL, tablesCopy, BACKUP_ROOT_DIR)));
+      assertEquals(ColumnFamilyMismatchException.class, Throwables.getRootCause(ex).getClass());
+      takeFullBackup(tables, client);
 
       int NB_ROWS_FAM2 = 7;
       Table t3 = insertIntoTable(conn, table1, fam2Name, 2, NB_ROWS_FAM2);
@@ -226,5 +235,13 @@ public class TestIncrementalBackup extends TestBackupBase {
       hTable.close();
       admin.close();
     }
+  }
+
+  private String takeFullBackup(List<TableName> tables, BackupAdminImpl backupAdmin)
+    throws IOException {
+    BackupRequest req = createBackupRequest(BackupType.FULL, tables, BACKUP_ROOT_DIR);
+    String backupId = backupAdmin.backupTables(req);
+    checkSucceeded(backupId);
+    return backupId;
   }
 }
