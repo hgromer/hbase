@@ -32,15 +32,20 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupCopyJob;
+import org.apache.hadoop.hbase.backup.BackupInfo;
 import org.apache.hadoop.hbase.backup.BackupInfo.BackupPhase;
 import org.apache.hadoop.hbase.backup.BackupRequest;
 import org.apache.hadoop.hbase.backup.BackupRestoreFactory;
 import org.apache.hadoop.hbase.backup.BackupType;
+import org.apache.hadoop.hbase.backup.HBackupFileSystem;
 import org.apache.hadoop.hbase.backup.mapreduce.MapReduceBackupCopyJob;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.mapreduce.WALPlayer;
+import org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils;
+import org.apache.hadoop.hbase.snapshot.SnapshotManifest;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
@@ -50,6 +55,8 @@ import org.apache.hadoop.util.Tool;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 
 /**
  * Incremental backup implementation. See the {@link #execute() execute} method.
@@ -262,6 +269,20 @@ public class IncrementalTableBackupClient extends TableBackupClient {
   @Override
   public void execute() throws IOException {
     try {
+      String fullBackupId =
+        getAncestors(backupInfo).stream().filter(bi -> bi.getType() == BackupType.FULL).findFirst()
+          .orElseThrow(() -> new RuntimeException(
+            "Could not find full backup for incremental backup: " + backupInfo.getBackupId()))
+          .getBackupId();
+
+      try (BackupAdminImpl backupAdmin = new BackupAdminImpl(conn)) {
+        BackupInfo fullBackupInfo = backupAdmin.getBackupInfo(fullBackupId);
+
+        for (TableName tn : backupInfo.getTables()) {
+          verifyHtd(tn, fullBackupInfo);
+        }
+      }
+
       // case PREPARE_INCREMENTAL:
       beginBackup(backupManager, backupInfo);
       backupInfo.setPhase(BackupPhase.PREPARE_INCREMENTAL);
@@ -433,5 +454,39 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     path = new Path(path, ".tmp");
     path = new Path(path, backupId);
     return path;
+  }
+
+  private void verifyHtd(TableName tn, BackupInfo fullBackupInfo) throws IOException {
+    try (Admin admin = conn.getAdmin()) {
+      ColumnFamilyDescriptor[] currentCfs = admin.getDescriptor(tn).getColumnFamilies();
+      String snapshotName = fullBackupInfo.getSnapshotName(tn);
+      Path root = HBackupFileSystem.getTableBackupPath(tn,
+        new Path(fullBackupInfo.getBackupRootDir()), fullBackupInfo.getBackupId());
+      Path manifestDir = SnapshotDescriptionUtils.getCompletedSnapshotDir(snapshotName, root);
+
+      FileSystem fs = FileSystem.get(conf);
+      SnapshotProtos.SnapshotDescription snapshotDescription =
+        SnapshotDescriptionUtils.readSnapshotInfo(fs, manifestDir);
+      SnapshotManifest manifest = SnapshotManifest.open(conf, fs, manifestDir, snapshotDescription);
+
+      ColumnFamilyDescriptor[] backupCfs = manifest.getTableDescriptor().getColumnFamilies();
+      verifyCfs(currentCfs, backupCfs);
+    }
+  }
+
+  private static void verifyCfs(ColumnFamilyDescriptor[] currentCfs,
+    ColumnFamilyDescriptor[] backupCfs) throws IOException {
+    if (currentCfs.length != backupCfs.length) {
+      throw ColumnFamilyMismatchException.create(currentCfs, backupCfs);
+    }
+
+    for (int i = 0; i < backupCfs.length; i++) {
+      String currentCf = currentCfs[i].getNameAsString();
+      String backupCf = backupCfs[i].getNameAsString();
+
+      if (!currentCf.equals(backupCf)) {
+        throw ColumnFamilyMismatchException.create(currentCfs, backupCfs);
+      }
+    }
   }
 }
