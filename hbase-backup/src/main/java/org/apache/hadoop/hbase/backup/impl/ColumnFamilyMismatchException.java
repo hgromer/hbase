@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.backup.impl;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.yetus.audience.InterfaceAudience;
 
@@ -27,13 +28,14 @@ public class ColumnFamilyMismatchException extends BackupException {
     super(msg);
   }
 
-  public static ColumnFamilyMismatchException create(ColumnFamilyDescriptor[] currentCfs,
-    ColumnFamilyDescriptor[] backupCfs) {
+  public static ColumnFamilyMismatchException create(TableName tn,
+                                                     ColumnFamilyDescriptor[] currentCfs, ColumnFamilyDescriptor[] backupCfs) {
     String currentCfsParsed = StringUtils.join(currentCfs, ',');
     String backupCfsParsed = StringUtils.join(backupCfs, ',');
 
-    String msg = "Mismatch in column family descriptors. Current families: %s Backup families: %s"
-      .formatted(currentCfsParsed, backupCfsParsed);
+    String msg =
+        "Mismatch in column family descriptors for table: %s\nCurrent families: %s\nBackup families: %s"
+            .formatted(tn, currentCfsParsed, backupCfsParsed);
     return new ColumnFamilyMismatchException(msg);
   }
 }

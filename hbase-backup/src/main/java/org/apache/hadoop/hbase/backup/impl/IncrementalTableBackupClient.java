@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -269,16 +270,12 @@ public class IncrementalTableBackupClient extends TableBackupClient {
   @Override
   public void execute() throws IOException {
     try {
-      String fullBackupId =
-        getAncestors(backupInfo).stream().filter(bi -> bi.getType() == BackupType.FULL).findFirst()
-          .orElseThrow(() -> new RuntimeException(
-            "Could not find full backup for incremental backup: " + backupInfo.getBackupId()))
-          .getBackupId();
+      Map<TableName, String> tablesToFullBackupIds = getFullBackupIds();
 
       try (BackupAdminImpl backupAdmin = new BackupAdminImpl(conn)) {
-        BackupInfo fullBackupInfo = backupAdmin.getBackupInfo(fullBackupId);
-
         for (TableName tn : backupInfo.getTables()) {
+          String fullBackupId = tablesToFullBackupIds.get(tn);
+          BackupInfo fullBackupInfo = backupAdmin.getBackupInfo(fullBackupId);
           verifyHtd(tn, fullBackupInfo);
         }
       }
@@ -456,6 +453,25 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     return path;
   }
 
+  private Map<TableName, String> getFullBackupIds() throws IOException {
+    // Ancestors are stored from newest to oldest, so we can iterate backwards
+    // in order to populate our backupId map with the most recent full backup
+    // for a given table
+    List<BackupManifest.BackupImage> images = getAncestors(backupInfo);
+    Map<TableName, String> results = new HashMap<>();
+    for (int i = images.size() - 1; i >= 0; i--) {
+      BackupManifest.BackupImage image = images.get(i);
+      if (image.getType() != BackupType.FULL) {
+        continue;
+      }
+
+      for (TableName tn : image.getTableNames()) {
+        results.put(tn, image.getBackupId());
+      }
+    }
+    return results;
+  }
+
   private void verifyHtd(TableName tn, BackupInfo fullBackupInfo) throws IOException {
     try (Admin admin = conn.getAdmin()) {
       ColumnFamilyDescriptor[] currentCfs = admin.getDescriptor(tn).getColumnFamilies();
@@ -464,20 +480,26 @@ public class IncrementalTableBackupClient extends TableBackupClient {
         new Path(fullBackupInfo.getBackupRootDir()), fullBackupInfo.getBackupId());
       Path manifestDir = SnapshotDescriptionUtils.getCompletedSnapshotDir(snapshotName, root);
 
-      FileSystem fs = FileSystem.get(conf);
+      FileSystem fs;
+      try {
+        fs = FileSystem.get(new URI(fullBackupInfo.getBackupRootDir()), conf);
+      } catch (URISyntaxException e) {
+        throw new IOException("Unable to get fs", e);
+      }
+
       SnapshotProtos.SnapshotDescription snapshotDescription =
         SnapshotDescriptionUtils.readSnapshotInfo(fs, manifestDir);
       SnapshotManifest manifest = SnapshotManifest.open(conf, fs, manifestDir, snapshotDescription);
 
       ColumnFamilyDescriptor[] backupCfs = manifest.getTableDescriptor().getColumnFamilies();
-      verifyCfs(currentCfs, backupCfs);
+      verifyCfs(tn, currentCfs, backupCfs);
     }
   }
 
-  private static void verifyCfs(ColumnFamilyDescriptor[] currentCfs,
+  private static void verifyCfs(TableName tn, ColumnFamilyDescriptor[] currentCfs,
     ColumnFamilyDescriptor[] backupCfs) throws IOException {
     if (currentCfs.length != backupCfs.length) {
-      throw ColumnFamilyMismatchException.create(currentCfs, backupCfs);
+      throw ColumnFamilyMismatchException.create(tn, currentCfs, backupCfs);
     }
 
     for (int i = 0; i < backupCfs.length; i++) {
@@ -485,7 +507,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
       String backupCf = backupCfs[i].getNameAsString();
 
       if (!currentCf.equals(backupCf)) {
-        throw ColumnFamilyMismatchException.create(currentCfs, backupCfs);
+        throw ColumnFamilyMismatchException.create(tn, currentCfs, backupCfs);
       }
     }
   }
