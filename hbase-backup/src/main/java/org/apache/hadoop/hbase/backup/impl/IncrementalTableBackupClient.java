@@ -18,11 +18,16 @@
 package org.apache.hadoop.hbase.backup.impl;
 
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.JOB_NAME_CONF_KEY;
+
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
@@ -36,22 +41,28 @@ import org.apache.hadoop.hbase.backup.BackupRequest;
 import org.apache.hadoop.hbase.backup.BackupRestoreFactory;
 import org.apache.hadoop.hbase.backup.BackupType;
 import org.apache.hadoop.hbase.backup.HBackupFileSystem;
+import org.apache.hadoop.hbase.backup.mapreduce.MapReduceBackupCopyJob;
 import org.apache.hadoop.hbase.backup.mapreduce.MapReduceHFileSplitterJob;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.mapreduce.WALPlayer;
 import org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils;
+import org.apache.hadoop.hbase.snapshot.SnapshotManifest;
 import org.apache.hadoop.hbase.snapshot.SnapshotRegionLocator;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
-import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.util.Tool;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 
 /**
  * Incremental backup implementation. See the {@link #execute() execute} method.
@@ -113,13 +124,23 @@ public class IncrementalTableBackupClient extends TableBackupClient {
    */
   @SuppressWarnings("unchecked")
   protected List<byte[]> handleBulkLoad(List<TableName> sTableList) throws IOException {
+    Map<byte[], List<Path>>[] mapForSrc = new Map[sTableList.size()];
     Pair<Map<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>>, List<byte[]>> pair =
       backupManager.readBulkloadRows(sTableList);
     Map<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>> map = pair.getFirst();
+    FileSystem tgtFs;
+    try {
+      tgtFs = FileSystem.get(new URI(backupInfo.getBackupRootDir()), conf);
+    } catch (URISyntaxException use) {
+      throw new IOException("Unable to get FileSystem", use);
+    }
     Path rootdir = CommonFSUtils.getRootDir(conf);
+    Path tgtRoot = new Path(new Path(backupInfo.getBackupRootDir()), backupId);
 
     for (Map.Entry<TableName, Map<String, Map<String, List<Pair<String, Boolean>>>>> tblEntry : map
       .entrySet()) {
+      List<String> activeFiles = new ArrayList<>();
+      List<String> archiveFiles = new ArrayList<>();
       TableName srcTable = tblEntry.getKey();
 
       int srcIdx = getIndex(srcTable, sTableList);
@@ -127,9 +148,12 @@ public class IncrementalTableBackupClient extends TableBackupClient {
         LOG.warn("Couldn't find " + srcTable + " in source table List");
         continue;
       }
+      if (mapForSrc[srcIdx] == null) {
+        mapForSrc[srcIdx] = new TreeMap<>(Bytes.BYTES_COMPARATOR);
+      }
       Path tblDir = CommonFSUtils.getTableDir(rootdir, srcTable);
-      List<String> activeFiles = new ArrayList<>();
-      List<String> archiveFiles = new ArrayList<>();
+      Path tgtTable = new Path(new Path(tgtRoot, srcTable.getNamespaceAsString()),
+        srcTable.getQualifierAsString());
       for (Map.Entry<String, Map<String, List<Pair<String, Boolean>>>> regionEntry : tblEntry
         .getValue().entrySet()) {
         String regionName = regionEntry.getKey();
@@ -139,66 +163,48 @@ public class IncrementalTableBackupClient extends TableBackupClient {
           .entrySet()) {
           String fam = famEntry.getKey();
           Path famDir = new Path(regionDir, fam);
-          activeFiles.add(famDir.toString());
-
-          // Next, we need to find all the HFiles
-
-          Path archiveDir = HFileArchiveUtil.getStoreArchivePath(conf, srcTable, regionName, fam);
-          if (fs.exists(archiveDir)) {
-            // TODO - Is this necessary?
-            archiveFiles.add(archiveDir.toString());
+          List<Path> files;
+          if (!mapForSrc[srcIdx].containsKey(Bytes.toBytes(fam))) {
+            files = new ArrayList<>();
+            mapForSrc[srcIdx].put(Bytes.toBytes(fam), files);
+          } else {
+            files = mapForSrc[srcIdx].get(Bytes.toBytes(fam));
           }
-
-          RemoteIterator<LocatedFileStatus> iter = fs.listFiles(famDir, true);
-          while (iter.hasNext()) {
-            LOG.info("Found file to bulkload: {}", iter.next());
+          Path archiveDir = HFileArchiveUtil.getStoreArchivePath(conf, srcTable, regionName, fam);
+          String tblName = srcTable.getQualifierAsString();
+          Path tgtFam = new Path(new Path(tgtTable, regionName), fam);
+          if (!tgtFs.mkdirs(tgtFam)) {
+            throw new IOException("couldn't create " + tgtFam);
+          }
+          for (Pair<String, Boolean> fileWithState : famEntry.getValue()) {
+            String file = fileWithState.getFirst();
+            int idx = file.lastIndexOf("/");
+            String filename = file;
+            if (idx > 0) {
+              filename = file.substring(idx + 1);
+            }
+            Path p = new Path(famDir, filename);
+            Path tgt = new Path(tgtFam, filename);
+            Path archive = new Path(archiveDir, filename);
+            if (fs.exists(p)) {
+              if (LOG.isTraceEnabled()) {
+                LOG.trace("found bulk hfile " + file + " in " + famDir + " for " + tblName);
+              }
+              if (LOG.isTraceEnabled()) {
+                LOG.trace("copying " + p + " to " + tgt);
+              }
+              activeFiles.add(p.toString());
+            } else if (fs.exists(archive)) {
+              LOG.debug("copying archive " + archive + " to " + tgt);
+              archiveFiles.add(archive.toString());
+            }
+            files.add(tgt);
           }
         }
-
       }
       mergeSplitBulkloads(activeFiles, archiveFiles, srcTable);
-      RemoteIterator<LocatedFileStatus> iter = fs.listFiles(getBulkOutputDir(), true);
-      while (iter.hasNext()) {
-        LOG.info("MergeSplit target: {}", iter.next());
-      }
+      incrementalCopyBulkloadHFiles(tgtFs, srcTable);
     }
-
-    // TODO - Maybe the check should be more explicit
-    if (fs.exists(getBulkOutputDir())) {
-      RemoteIterator<LocatedFileStatus> iter = fs.listFiles(getBulkOutputDir(), true);
-      while (iter.hasNext()) {
-        LocatedFileStatus fileStatus = iter.next();
-        LOG.info("Found bulkload (source) file {}", fileStatus);
-      }
-
-      incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
-        backupInfo.getBackupRootDir());
-
-      iter = fs.listFiles(new Path(backupInfo.getBackupRootDir()), true);
-      while (iter.hasNext()) {
-        LocatedFileStatus fileStatus = iter.next();
-        LOG.info("Found bulkload (target) file {}", fileStatus);
-      }
-    }
-
-    // TODO - Maybe the check should be more explicit
-    if (fs.exists(getBulkOutputDir())) {
-      RemoteIterator<LocatedFileStatus> iter = fs.listFiles(getBulkOutputDir(), true);
-      while (iter.hasNext()) {
-        LocatedFileStatus fileStatus = iter.next();
-        LOG.info("Found bulkload (source) file {}", fileStatus);
-      }
-
-      incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
-        backupInfo.getBackupRootDir());
-
-      iter = fs.listFiles(new Path(backupInfo.getBackupRootDir()), true);
-      while (iter.hasNext()) {
-        LocatedFileStatus fileStatus = iter.next();
-        LOG.info("Found bulkload (target) file {}", fileStatus);
-      }
-    }
-
     return pair.getSecond();
   }
 
@@ -231,7 +237,8 @@ public class IncrementalTableBackupClient extends TableBackupClient {
 
   private void mergeSplitBulkloads(List<String> files, TableName tn) throws IOException {
     MapReduceHFileSplitterJob player = new MapReduceHFileSplitterJob();
-    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY, getBulkOutputDir().toString());
+    conf.set(MapReduceHFileSplitterJob.BULK_OUTPUT_CONF_KEY,
+      getBulkOutputDirForTable(tn).toString());
     player.setConf(conf);
 
     String inputDirs = StringUtils.join(files, ",");
@@ -269,6 +276,16 @@ public class IncrementalTableBackupClient extends TableBackupClient {
   @Override
   public void execute() throws IOException {
     try {
+      Map<TableName, String> tablesToFullBackupIds = getFullBackupIds();
+
+      try (BackupAdminImpl backupAdmin = new BackupAdminImpl(conn)) {
+        for (TableName tn : backupInfo.getTables()) {
+          String fullBackupId = tablesToFullBackupIds.get(tn);
+          BackupInfo fullBackupInfo = backupAdmin.getBackupInfo(fullBackupId);
+          verifyHtd(tn, fullBackupInfo);
+        }
+      }
+
       // case PREPARE_INCREMENTAL:
       beginBackup(backupManager, backupInfo);
       backupInfo.setPhase(BackupPhase.PREPARE_INCREMENTAL);
@@ -286,7 +303,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     try {
       // copy out the table and region info files for each table
       BackupUtils.copyTableRegionInfo(conn, backupInfo, conf);
-      setupTableSplits();
+      setupRegionLocator();
       // convert WAL to HFiles and copy them to .tmp under BACKUP_ROOT
       convertWALsToHFiles();
       incrementalCopyHFiles(new String[] { getBulkOutputDir().toString() },
@@ -429,7 +446,52 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     }
   }
 
-  private void setupTableSplits() throws IOException {
+  private void incrementalCopyBulkloadHFiles(FileSystem tgtFs, TableName tn) throws IOException {
+    Path bulkOutDir = getBulkOutputDirForTable(tn);
+    FileSystem fs = FileSystem.get(conf);
+
+    if (fs.exists(bulkOutDir)) {
+      conf.setInt(MapReduceBackupCopyJob.NUMBER_OF_LEVELS_TO_PRESERVE_KEY, 2);
+      Path tgtPath = getTargetDirForTable(tn);
+      try {
+        RemoteIterator<LocatedFileStatus> locatedFiles = tgtFs.listFiles(bulkOutDir, true);
+        List<String> files = new ArrayList<>();
+        while (locatedFiles.hasNext()) {
+          LocatedFileStatus file = locatedFiles.next();
+          if (file.isFile() && HFile.isHFileFormat(tgtFs, file.getPath())) {
+            files.add(file.getPath().toString());
+          }
+        }
+        incrementalCopyHFiles(files.toArray(files.toArray(new String[0])), tgtPath.toString());
+      } finally {
+        conf.unset(MapReduceBackupCopyJob.NUMBER_OF_LEVELS_TO_PRESERVE_KEY);
+      }
+    }
+  }
+
+  protected Path getBulkOutputDirForTable(TableName table) {
+    Path tablePath = getBulkOutputDir();
+    tablePath = new Path(tablePath, table.getNamespaceAsString());
+    tablePath = new Path(tablePath, table.getQualifierAsString());
+    return new Path(tablePath, "data");
+  }
+
+  protected Path getBulkOutputDir() {
+    String backupId = backupInfo.getBackupId();
+    Path path = new Path(backupInfo.getBackupRootDir());
+    path = new Path(path, ".tmp");
+    path = new Path(path, backupId);
+    return path;
+  }
+
+  private Path getTargetDirForTable(TableName table) {
+    Path path = new Path(backupInfo.getBackupRootDir() + Path.SEPARATOR + backupInfo.getBackupId());
+    path = new Path(path, table.getNamespaceAsString());
+    path = new Path(path, table.getNameAsString());
+    return path;
+  }
+
+  private void setupRegionLocator() throws IOException {
     String fullBackupId =
       getAncestors(backupInfo).stream().filter(bi -> bi.getType() == BackupType.FULL).findFirst()
         .orElseThrow(
@@ -450,11 +512,62 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     }
   }
 
-  protected Path getBulkOutputDir() {
-    String backupId = backupInfo.getBackupId();
-    Path path = new Path(backupInfo.getBackupRootDir());
-    path = new Path(path, ".tmp");
-    path = new Path(path, backupId);
-    return path;
+  private Map<TableName, String> getFullBackupIds() throws IOException {
+    // Ancestors are stored from newest to oldest, so we can iterate backwards
+    // in order to populate our backupId map with the most recent full backup
+    // for a given table
+    List<BackupManifest.BackupImage> images = getAncestors(backupInfo);
+    Map<TableName, String> results = new HashMap<>();
+    for (int i = images.size() - 1; i >= 0; i--) {
+      BackupManifest.BackupImage image = images.get(i);
+      if (image.getType() != BackupType.FULL) {
+        continue;
+      }
+
+      for (TableName tn : image.getTableNames()) {
+        results.put(tn, image.getBackupId());
+      }
+    }
+    return results;
+  }
+
+  private void verifyHtd(TableName tn, BackupInfo fullBackupInfo) throws IOException {
+    try (Admin admin = conn.getAdmin()) {
+      ColumnFamilyDescriptor[] currentCfs = admin.getDescriptor(tn).getColumnFamilies();
+      String snapshotName = fullBackupInfo.getSnapshotName(tn);
+      Path root = HBackupFileSystem.getTableBackupPath(tn,
+        new Path(fullBackupInfo.getBackupRootDir()), fullBackupInfo.getBackupId());
+      Path manifestDir = SnapshotDescriptionUtils.getCompletedSnapshotDir(snapshotName, root);
+
+      FileSystem fs;
+      try {
+        fs = FileSystem.get(new URI(fullBackupInfo.getBackupRootDir()), conf);
+      } catch (URISyntaxException e) {
+        throw new IOException("Unable to get fs", e);
+      }
+
+      SnapshotProtos.SnapshotDescription snapshotDescription =
+        SnapshotDescriptionUtils.readSnapshotInfo(fs, manifestDir);
+      SnapshotManifest manifest = SnapshotManifest.open(conf, fs, manifestDir, snapshotDescription);
+
+      ColumnFamilyDescriptor[] backupCfs = manifest.getTableDescriptor().getColumnFamilies();
+      verifyCfs(tn, currentCfs, backupCfs);
+    }
+  }
+
+  private static void verifyCfs(TableName tn, ColumnFamilyDescriptor[] currentCfs,
+    ColumnFamilyDescriptor[] backupCfs) throws IOException {
+    if (currentCfs.length != backupCfs.length) {
+      throw ColumnFamilyMismatchException.create(tn, currentCfs, backupCfs);
+    }
+
+    for (int i = 0; i < backupCfs.length; i++) {
+      String currentCf = currentCfs[i].getNameAsString();
+      String backupCf = backupCfs[i].getNameAsString();
+
+      if (!currentCf.equals(backupCf)) {
+        throw ColumnFamilyMismatchException.create(tn, currentCfs, backupCfs);
+      }
+    }
   }
 }
