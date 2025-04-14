@@ -141,7 +141,6 @@ import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.cache.Cache;
 import org.apache.hbase.thirdparty.com.google.common.cache.CacheBuilder;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
@@ -153,7 +152,6 @@ import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 import org.apache.hbase.thirdparty.com.google.protobuf.TextFormat;
 import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
 import org.apache.hbase.thirdparty.org.apache.commons.collections4.CollectionUtils;
-
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.RequestConverter;
 import org.apache.hadoop.hbase.shaded.protobuf.ResponseConverter;
@@ -2803,6 +2801,12 @@ public class RSRpcServices extends HBaseRpcServicesBase<HRegionServer>
               if (result.getResult() != null) {
                 resultOrExceptionOrBuilder.setResult(ProtobufUtil.toResult(result.getResult()));
               }
+
+              if (result.getMetrics() != null) {
+                resultOrExceptionOrBuilder
+                  .setMetrics(ProtobufUtil.toQueryMetrics(result.getMetrics()));
+              }
+
               regionActionResultBuilder.addResultOrException(resultOrExceptionOrBuilder.build());
             } else {
               CheckAndMutateResult result = checkAndMutate(region, regionAction.getActionList(),
@@ -2969,6 +2973,9 @@ public class RSRpcServices extends HBaseRpcServicesBase<HRegionServer>
         addResult(builder, result.getResult(), controller, clientCellBlockSupported);
         if (clientCellBlockSupported) {
           addSize(context, result.getResult());
+        }
+        if (result.getMetrics() != null) {
+          builder.setMetrics(ProtobufUtil.toQueryMetrics(result.getMetrics()));
         }
       } else {
         Result r = null;

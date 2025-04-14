@@ -3637,6 +3637,7 @@ public final class ProtobufUtil {
       ? ProtobufUtil.toTimeRange(condition.getTimeRange())
       : TimeRange.allTime();
     builder.timeRange(timeRange);
+    builder.queryMetricsEnabled(condition.getQueryMetricsEnabled());
 
     try {
       MutationType type = mutation.getMutateType();
@@ -3674,6 +3675,7 @@ public final class ProtobufUtil {
       ? ProtobufUtil.toTimeRange(condition.getTimeRange())
       : TimeRange.allTime();
     builder.timeRange(timeRange);
+    builder.queryMetricsEnabled(condition.getQueryMetricsEnabled());
 
     try {
       if (mutations.size() == 1) {
@@ -3700,7 +3702,7 @@ public final class ProtobufUtil {
 
   public static ClientProtos.Condition toCondition(final byte[] row, final byte[] family,
     final byte[] qualifier, final CompareOperator op, final byte[] value, final Filter filter,
-    final TimeRange timeRange) throws IOException {
+    final TimeRange timeRange, boolean queryMetricsEnabled) throws IOException {
 
     ClientProtos.Condition.Builder builder =
       ClientProtos.Condition.newBuilder().setRow(UnsafeByteOperations.unsafeWrap(row));
@@ -3715,18 +3717,19 @@ public final class ProtobufUtil {
         .setCompareType(HBaseProtos.CompareType.valueOf(op.name()));
     }
 
+    builder.setQueryMetricsEnabled(queryMetricsEnabled);
     return builder.setTimeRange(ProtobufUtil.toTimeRange(timeRange)).build();
   }
 
   public static ClientProtos.Condition toCondition(final byte[] row, final Filter filter,
     final TimeRange timeRange) throws IOException {
-    return toCondition(row, null, null, null, null, filter, timeRange);
+    return toCondition(row, null, null, null, null, filter, timeRange, false);
   }
 
   public static ClientProtos.Condition toCondition(final byte[] row, final byte[] family,
     final byte[] qualifier, final CompareOperator op, final byte[] value, final TimeRange timeRange)
     throws IOException {
-    return toCondition(row, family, qualifier, op, value, null, timeRange);
+    return toCondition(row, family, qualifier, op, value, null, timeRange, false);
   }
 
   public static List<LogEntry> toBalancerDecisionResponse(HBaseProtos.LogEntry logEntry) {

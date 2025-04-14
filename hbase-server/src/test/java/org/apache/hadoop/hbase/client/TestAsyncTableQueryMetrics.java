@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -36,7 +37,6 @@ import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-
 import org.apache.hbase.thirdparty.com.google.common.io.Closeables;
 
 @Category({ MediumTests.class, ClientTests.class })
@@ -150,6 +150,74 @@ public class TestAsyncTableQueryMetrics {
       for (Result result : scanner) {
         Assert.assertNull(result.getMetrics());
       }
+    }
+  }
+
+  @Test
+  public void itTestsAtomicOperations() {
+    CheckAndMutate cam = CheckAndMutate.newBuilder(ROW_1).ifEquals(CF, CQ, VALUE)
+      .queryMetricsEnabled(true).build(new Put(ROW_1).addColumn(CF, CQ, VALUE));
+
+    long bbs = getClusterBlockBytesScanned();
+    CheckAndMutateResult result = CONN.getTable(TABLE_NAME).checkAndMutate(cam).join();
+    QueryMetrics metrics = result.getMetrics();
+
+    Assert.assertNotNull(metrics);
+    Assert.assertEquals(getClusterBlockBytesScanned(), bbs + metrics.getBlockBytesScanned());
+
+    bbs = getClusterBlockBytesScanned();
+    List<CheckAndMutate> batch = new ArrayList<>();
+    batch.add(cam);
+    batch.add(CheckAndMutate.newBuilder(ROW_2).queryMetricsEnabled(true).ifEquals(CF, CQ, VALUE)
+      .build(new Put(ROW_2).addColumn(CF, CQ, VALUE)));
+    batch.add(CheckAndMutate.newBuilder(ROW_3).queryMetricsEnabled(true).ifEquals(CF, CQ, VALUE)
+      .build(new Put(ROW_3).addColumn(CF, CQ, VALUE)));
+
+    List<Object> res = CONN.getTable(TABLE_NAME).batchAll(batch).join();
+    long totalBbs = res.stream()
+      .mapToLong(r -> ((CheckAndMutateResult) r).getMetrics().getBlockBytesScanned()).sum();
+    Assert.assertEquals(getClusterBlockBytesScanned(), bbs + totalBbs);
+
+    bbs = getClusterBlockBytesScanned();
+
+    // flush to force fetch from disk
+    CONN.getAdmin().flush(TABLE_NAME).join();
+    List<CompletableFuture<Object>> futures = CONN.getTable(TABLE_NAME).batch(batch);
+
+    totalBbs = futures.stream().map(CompletableFuture::join)
+      .mapToLong(r -> ((CheckAndMutateResult) r).getMetrics().getBlockBytesScanned()).sum();
+    Assert.assertEquals(getClusterBlockBytesScanned(), bbs + totalBbs);
+  }
+
+  @Test
+  public void itTestsDefaultAtomicOperations() {
+    CheckAndMutate cam = CheckAndMutate.newBuilder(ROW_1).ifEquals(CF, CQ, VALUE)
+      .build(new Put(ROW_1).addColumn(CF, CQ, VALUE));
+
+    CheckAndMutateResult result = CONN.getTable(TABLE_NAME).checkAndMutate(cam).join();
+    QueryMetrics metrics = result.getMetrics();
+
+    Assert.assertNull(metrics);
+
+    List<CheckAndMutate> batch = new ArrayList<>();
+    batch.add(cam);
+    batch.add(CheckAndMutate.newBuilder(ROW_2).ifEquals(CF, CQ, VALUE)
+      .build(new Put(ROW_2).addColumn(CF, CQ, VALUE)));
+    batch.add(CheckAndMutate.newBuilder(ROW_3).ifEquals(CF, CQ, VALUE)
+      .build(new Put(ROW_3).addColumn(CF, CQ, VALUE)));
+
+    List<Object> res = CONN.getTable(TABLE_NAME).batchAll(batch).join();
+    for (Object r : res) {
+      Assert.assertNull(((CheckAndMutateResult) r).getMetrics());
+    }
+
+    // flush to force fetch from disk
+    CONN.getAdmin().flush(TABLE_NAME).join();
+    List<CompletableFuture<Object>> futures = CONN.getTable(TABLE_NAME).batch(batch);
+
+    for (CompletableFuture<Object> future : futures) {
+      Object r = future.join();
+      Assert.assertNull(((CheckAndMutateResult) r).getMetrics());
     }
   }
 

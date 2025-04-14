@@ -37,10 +37,8 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
-
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AccessControlProtos.HasPermissionResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CloseRegionResponse;
@@ -195,6 +193,7 @@ public final class ResponseConverter {
   private static CheckAndMutateResult getCheckAndMutateResult(RegionActionResult actionResult,
     CellScanner cells) throws IOException {
     Result result = null;
+    QueryMetrics metrics = null;
     if (actionResult.getResultOrExceptionCount() > 0) {
       // Get the result of the Increment/Append operations from the first element of the
       // ResultOrException list
@@ -205,8 +204,12 @@ public final class ResponseConverter {
           result = r;
         }
       }
+
+      if (roe.hasMetrics()) {
+        metrics = ProtobufUtil.toQueryMetrics(roe.getMetrics());
+      }
     }
-    return new CheckAndMutateResult(actionResult.getProcessed(), result);
+    return new CheckAndMutateResult(actionResult.getProcessed(), result).setMetrics(metrics);
   }
 
   private static Result getMutateRowResult(RegionActionResult actionResult, CellScanner cells)
@@ -241,10 +244,16 @@ public final class ResponseConverter {
     ClientProtos.MutateResponse mutateResponse, CellScanner cells) throws IOException {
     boolean success = mutateResponse.getProcessed();
     Result result = null;
+    QueryMetrics metrics = null;
     if (mutateResponse.hasResult()) {
       result = ProtobufUtil.toResult(mutateResponse.getResult(), cells);
     }
-    return new CheckAndMutateResult(success, result);
+
+    if (mutateResponse.hasMetrics()) {
+      metrics = ProtobufUtil.toQueryMetrics(mutateResponse.getMetrics());
+    }
+
+    return new CheckAndMutateResult(success, result).setMetrics(metrics);
   }
 
   /**

@@ -22,7 +22,6 @@ import static org.apache.hadoop.hbase.regionserver.HStoreFile.MAJOR_COMPACTION_K
 import static org.apache.hadoop.hbase.trace.HBaseSemanticAttributes.REGION_NAMES_KEY;
 import static org.apache.hadoop.hbase.trace.HBaseSemanticAttributes.ROW_LOCK_READ_LOCK_KEY;
 import static org.apache.hadoop.hbase.util.ConcurrentMapUtils.computeIfAbsent;
-
 import com.google.errorprone.annotations.RestrictedApi;
 import edu.umd.cs.findbugs.annotations.Nullable;
 import io.opentelemetry.api.trace.Span;
@@ -114,6 +113,7 @@ import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.IsolationLevel;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.QueryMetrics;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.Result;
@@ -194,7 +194,6 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
@@ -209,7 +208,6 @@ import org.apache.hbase.thirdparty.com.google.protobuf.Service;
 import org.apache.hbase.thirdparty.com.google.protobuf.TextFormat;
 import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
 import org.apache.hbase.thirdparty.org.apache.commons.collections4.CollectionUtils;
-
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.WALEntry;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
@@ -5127,7 +5125,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         // we'll get the latest on this row.
         boolean matches = false;
         long cellTs = 0;
-        try (RegionScanner scanner = getScanner(new Scan(get))) {
+        QueryMetrics metrics = null;
+        try (RegionScannerImpl scanner = getScanner(new Scan(get))) {
           // NOTE: Please don't use HRegion.get() instead,
           // because it will copy cells to heap. See HBASE-26036
           List<ExtendedCell> result = new ArrayList<>(1);
@@ -5151,6 +5150,9 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
               int compareResult = PrivateCellUtil.compareValue(kv, comparator);
               matches = matches(op, compareResult);
             }
+          }
+          if (checkAndMutate.isQueryMetricsEnabled()) {
+            metrics = new QueryMetrics(scanner.getContext().getBlockSizeProgress());
           }
         }
 
@@ -5188,10 +5190,10 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
             r = mutateRow(rowMutations, nonceGroup, nonce);
           }
           this.checkAndMutateChecksPassed.increment();
-          return new CheckAndMutateResult(true, r);
+          return new CheckAndMutateResult(true, r).setMetrics(metrics);
         }
         this.checkAndMutateChecksFailed.increment();
-        return new CheckAndMutateResult(false, null);
+        return new CheckAndMutateResult(false, null).setMetrics(metrics);
       } finally {
         rowLock.release();
       }
