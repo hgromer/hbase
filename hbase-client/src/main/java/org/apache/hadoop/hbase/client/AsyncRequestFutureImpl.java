@@ -216,6 +216,21 @@ class AsyncRequestFutureImpl<CResult> implements AsyncRequestFuture {
           // See HBASE-27487
           failAll(multiAction, server, numAttempt, e);
           return;
+        } catch (RetriesExhaustedWithDetailsException e) {
+          boolean isDueToOperationTimeoutException = true;
+          for (Throwable cause : e.getCauses()) {
+            if (!(cause instanceof OperationTimeoutExceededException)) {
+              isDueToOperationTimeoutException = false;
+              break;
+            }
+          }
+
+          if (isDueToOperationTimeoutException) {
+            failAll(multiAction, server, numAttempt, e);
+          } else {
+            receiveGlobalFailure(multiAction, server, numAttempt, e, true);
+          }
+          return;
         } catch (IOException e) {
           // The service itself failed . It may be an error coming from the communication
           // layer, but, as well, a functional error raised by the server.
