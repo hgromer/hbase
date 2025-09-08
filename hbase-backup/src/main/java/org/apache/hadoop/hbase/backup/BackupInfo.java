@@ -28,13 +28,13 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
 
@@ -45,6 +45,38 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
 public class BackupInfo implements Comparable<BackupInfo> {
   private static final Logger LOG = LoggerFactory.getLogger(BackupInfo.class);
   private static final int MAX_FAILED_MESSAGE_LENGTH = 1024;
+
+  private static class BackupInfoIs extends InputStream {
+
+    private int curr = 0;
+
+    private final byte[] data;
+    private final int offset;
+    private final int length;
+
+
+    private BackupInfoIs (byte[] data, int offset, int length) {
+      this.data = data;
+      this.offset = offset;
+      this.length = length;
+    }
+
+    @Override
+    public int read() throws IOException {
+      if (curr + offset >= length) {
+        return -1;
+      }
+
+      int val = data[offset + curr] & 0xFF;
+      ++curr;
+      return val;
+    }
+  }
+
+  public static InputStream toIS(Cell cell) {
+    return new BackupInfoIs(cell.getValueArray(), cell.getValueOffset(),
+      cell.getValueLength());
+  }
 
   public interface Filter {
     /**
@@ -481,10 +513,6 @@ public class BackupInfo implements Comparable<BackupInfo> {
             .build());
       }
     }
-  }
-
-  public static BackupInfo fromByteArray(byte[] data) throws IOException {
-    return fromProto(BackupProtos.BackupInfo.parseFrom(data));
   }
 
   public static BackupInfo fromStream(final InputStream stream) throws IOException {

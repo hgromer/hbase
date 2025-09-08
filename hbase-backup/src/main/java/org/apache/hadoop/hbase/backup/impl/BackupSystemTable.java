@@ -75,10 +75,8 @@ import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterators;
-
 import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 
@@ -1289,8 +1287,7 @@ public final class BackupSystemTable implements Closeable {
    * @throws IOException exception
    */
   private BackupInfo cellToBackupInfo(Cell current) throws IOException {
-    byte[] data = CellUtil.cloneValue(current);
-    return BackupInfo.fromByteArray(data);
+    return BackupInfo.fromStream(BackupInfo.toIS(current));
   }
 
   /**
