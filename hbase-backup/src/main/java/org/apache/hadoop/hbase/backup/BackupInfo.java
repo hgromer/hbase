@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.backup;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -46,36 +47,8 @@ public class BackupInfo implements Comparable<BackupInfo> {
   private static final Logger LOG = LoggerFactory.getLogger(BackupInfo.class);
   private static final int MAX_FAILED_MESSAGE_LENGTH = 1024;
 
-  private static class BackupInfoIs extends InputStream {
-
-    private int curr = 0;
-
-    private final byte[] data;
-    private final int offset;
-    private final int length;
-
-
-    private BackupInfoIs (byte[] data, int offset, int length) {
-      this.data = data;
-      this.offset = offset;
-      this.length = length;
-    }
-
-    @Override
-    public int read() throws IOException {
-      if (curr + offset >= length) {
-        return -1;
-      }
-
-      int val = data[offset + curr] & 0xFF;
-      ++curr;
-      return val;
-    }
-  }
-
   public static InputStream toIS(Cell cell) {
-    return new BackupInfoIs(cell.getValueArray(), cell.getValueOffset(),
-      cell.getValueLength());
+    return new ByteArrayInputStream(cell.getValueArray(), cell.getValueOffset(), cell.getValueLength());
   }
 
   public interface Filter {
