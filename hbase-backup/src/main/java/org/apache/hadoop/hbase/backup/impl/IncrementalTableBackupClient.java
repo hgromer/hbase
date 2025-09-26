@@ -57,6 +57,7 @@ import org.apache.hadoop.hbase.snapshot.SnapshotTTLExpiredException;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.hadoop.util.Tool;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -268,6 +269,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
    */
   @Override
   public void execute() throws IOException, ColumnFamilyMismatchException {
+    Set<String> deadAndUnknownServers;
     try {
       Map<TableName, String> tablesToFullBackupIds = getFullBackupIds();
       verifyCfCompatibility(backupInfo.getTables(), tablesToFullBackupIds);
@@ -277,7 +279,10 @@ public class IncrementalTableBackupClient extends TableBackupClient {
       backupInfo.setPhase(BackupPhase.PREPARE_INCREMENTAL);
       LOG.debug("For incremental backup, current table set is "
         + backupManager.getIncrementalBackupTableSet());
-      newTimestamps = ((IncrementalBackupManager) backupManager).getIncrBackupLogFileMap();
+      Pair<Set<String>, Map<String, Long>> pair =
+        ((IncrementalBackupManager) backupManager).getIncrBackupLogFileMap();
+      newTimestamps = pair.getSecond();
+      deadAndUnknownServers = pair.getFirst();
     } catch (Exception e) {
       // fail the overall backup and return
       failBackup(conn, backupInfo, backupManager, e, "Unexpected Exception : ",
@@ -323,7 +328,8 @@ public class IncrementalTableBackupClient extends TableBackupClient {
       List<BulkLoad> bulkLoads = handleBulkLoad(backupInfo.getTableNames());
 
       // backup complete
-      completeBackup(conn, backupInfo, BackupType.INCREMENTAL, conf);
+      completeBackup(conn, backupInfo, BackupType.INCREMENTAL, newStartCode, deadAndUnknownServers,
+        conf);
 
       List<byte[]> bulkLoadedRows = Lists.transform(bulkLoads, BulkLoad::getRowKey);
       backupManager.deleteBulkLoadedRows(bulkLoadedRows);

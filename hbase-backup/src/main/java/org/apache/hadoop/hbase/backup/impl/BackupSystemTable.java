@@ -791,6 +791,50 @@ public final class BackupSystemTable implements Closeable {
   }
 
   /**
+   * Cleans up region server log timestamps for servers that have not been active since before the
+   * last backup. This should be called after a successful backup, passing in the start code
+   * (timestamp) of the backup and the set of currently dead or unknown servers. Any region server
+   * log timestamp with a timestamp older than the start code and not in the dead or unknown set
+   * will be removed.
+   */
+  public void cleanupRegionServerLogTimestamp(String backupRoot, long startCode,
+    Set<String> deadAndUnknownServers) throws IOException {
+    Map<TableName, Map<String, Long>> logTimestampMap = readLogTimestampMap(backupRoot);
+    if (logTimestampMap.isEmpty()) {
+      return;
+    }
+
+    List<Delete> deletes = new ArrayList<>();
+    for (TableName table : logTimestampMap.keySet()) {
+      Map<String, Long> tsMap = logTimestampMap.get(table);
+
+      for (Entry<String, Long> entry : tsMap.entrySet()) {
+        String server = entry.getKey();
+        long ts = entry.getValue();
+
+        if (ts >= startCode) {
+          LOG.debug("Skipping cleanup of {} because its timestamp {} is >= start code {}", server,
+            ts, startCode);
+          continue;
+        }
+
+        if (deadAndUnknownServers.contains(server)) {
+          LOG.info("Skipping cleanup of {} because it is in the dead or unknown server list",
+            server);
+          continue;
+        }
+
+        Delete delete = new Delete(rowkey(RS_LOG_TS_PREFIX, backupRoot, NULL, server));
+        deletes.add(delete);
+      }
+    }
+
+    try (Table table = connection.getTable(tableName)) {
+      table.delete(deletes);
+    }
+  }
+
+  /**
    * Read the timestamp for each region server log after the last successful backup. Each table has
    * its own set of the timestamps. The info is stored for each table as a concatenated string of
    * rs->timestapmp

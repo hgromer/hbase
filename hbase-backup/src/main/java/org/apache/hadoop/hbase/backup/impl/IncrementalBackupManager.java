@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -32,6 +33,7 @@ import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -53,10 +55,11 @@ public class IncrementalBackupManager extends BackupManager {
   /**
    * Obtain the list of logs that need to be copied out for this incremental backup. The list is set
    * in BackupInfo.
-   * @return The new HashMap of RS log time stamps after the log roll for this incremental backup.
+   * @return A pair where the first is the set of unknown and dead servers at log roll time and the
+   *         second is HashMap of RS log time stamps after the log roll for this incremental backup.
    * @throws IOException exception
    */
-  public Map<String, Long> getIncrBackupLogFileMap() throws IOException {
+  public Pair<Set<String>, Map<String, Long>> getIncrBackupLogFileMap() throws IOException {
     List<String> logList;
     Map<String, Long> newTimestamps;
     Map<String, Long> previousTimestampMins;
@@ -81,7 +84,8 @@ public class IncrementalBackupManager extends BackupManager {
     }
 
     LOG.info("Execute roll log procedure for incremental backup ...");
-    BackupUtils.logRoll(conn, backupInfo.getBackupRootDir(), conf);
+    Set<String> deadAndUnknownServers =
+      BackupUtils.logRoll(conn, backupInfo.getBackupRootDir(), conf);
 
     newTimestamps = readRegionServerLastLogRollResult();
 
@@ -89,7 +93,7 @@ public class IncrementalBackupManager extends BackupManager {
     logList = excludeProcV2WALs(logList);
     backupInfo.setIncrBackupFileList(logList);
 
-    return newTimestamps;
+    return Pair.newPair(deadAndUnknownServers, newTimestamps);
   }
 
   private List<String> excludeProcV2WALs(List<String> logList) {

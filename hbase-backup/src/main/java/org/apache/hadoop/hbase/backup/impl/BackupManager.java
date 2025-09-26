@@ -395,6 +395,12 @@ public class BackupManager implements Closeable {
     systemTable.writeRegionServerLogTimestamp(tables, newTimestamps, backupInfo.getBackupRootDir());
   }
 
+  public void cleanupRegionServerLogTimestamp(long startCode, Set<String> deadAndUnknownHosts)
+    throws IOException {
+    systemTable.cleanupRegionServerLogTimestamp(backupInfo.getBackupRootDir(), startCode,
+      deadAndUnknownHosts);
+  }
+
   /**
    * Read the timestamp for each region server log after the last successful backup. Each table has
    * its own set of the timestamps.

@@ -23,11 +23,14 @@ import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import org.apache.hadoop.conf.Configuration;
@@ -39,6 +42,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hbase.ClusterMetrics;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.ServerName;
@@ -65,7 +69,6 @@ import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
@@ -775,15 +778,36 @@ public final class BackupUtils {
 
   /**
    * roll WAL writer for all region servers and record the newest log roll result
+   * @return The list of dead and unknown servers at the time of the log roll
    */
-  public static void logRoll(Connection conn, String backupRootDir, Configuration conf)
+  public static Set<String> logRoll(Connection conn, String backupRootDir, Configuration conf)
     throws IOException {
+    Set<String> deadAndUnknownServers = getDeadAndUnknownServers(conn);
+
     boolean legacy = conf.getBoolean("hbase.backup.logroll.legacy.used", false);
     if (legacy) {
       logRollV1(conn, backupRootDir);
     } else {
       logRollV2(conn, backupRootDir);
     }
+
+    // Query twice in case some servers died after the first query but before the log roll
+    deadAndUnknownServers.addAll(getDeadAndUnknownServers(conn));
+    return deadAndUnknownServers;
+  }
+
+  private static Set<String> getDeadAndUnknownServers(Connection conn) throws IOException {
+    ClusterMetrics metrics = conn.getAdmin().getClusterMetrics(
+      EnumSet.of(ClusterMetrics.Option.DEAD_SERVERS, ClusterMetrics.Option.UNKNOWN_SERVERS));
+    Set<String> deadAndUnknownServers =
+      new HashSet<>(metrics.getDeadServerNames().size() + metrics.getUnknownServerNames().size());
+
+    for (ServerName serverName : Iterables.concat(metrics.getDeadServerNames(),
+      metrics.getUnknownServerNames())) {
+      deadAndUnknownServers.add(serverName.getServerName());
+    }
+
+    return deadAndUnknownServers;
   }
 
   private static void logRollV1(Connection conn, String backupRootDir) throws IOException {

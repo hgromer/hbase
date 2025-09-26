@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Set;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -64,6 +65,7 @@ import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.hadoop.hbase.wal.WALFactory;
 import org.junit.AfterClass;
@@ -160,7 +162,9 @@ public class TestBackupBase {
         backupInfo.setPhase(BackupPhase.PREPARE_INCREMENTAL);
         LOG.debug("For incremental backup, current table set is "
           + backupManager.getIncrementalBackupTableSet());
-        newTimestamps = ((IncrementalBackupManager) backupManager).getIncrBackupLogFileMap();
+        Pair<Set<String>, Map<String, Long>> pair =
+          ((IncrementalBackupManager) backupManager).getIncrBackupLogFileMap();
+        newTimestamps = pair.getSecond();
         // copy out the table and region info files for each table
         BackupUtils.copyTableRegionInfo(conn, backupInfo, conf);
         // convert WAL to HFiles and copy them to .tmp under BACKUP_ROOT
@@ -193,7 +197,8 @@ public class TestBackupBase {
         failStageIf(Stage.stage_4);
 
         // backup complete
-        completeBackup(conn, backupInfo, BackupType.INCREMENTAL, conf);
+        completeBackup(conn, backupInfo, BackupType.INCREMENTAL, newStartCode, pair.getFirst(),
+          conf);
 
       } catch (Exception e) {
         failBackup(conn, backupInfo, backupManager, e, "Unexpected Exception : ",
@@ -237,7 +242,8 @@ public class TestBackupBase {
         // the snapshot.
         LOG.info("Execute roll log procedure for full backup ...");
 
-        BackupUtils.logRoll(conn, backupInfo.getBackupRootDir(), conf);
+        Set<String> deadAndUnknownServers =
+          BackupUtils.logRoll(conn, backupInfo.getBackupRootDir(), conf);
         failStageIf(Stage.stage_2);
         newTimestamps = backupManager.readRegionServerLastLogRollResult();
 
@@ -274,7 +280,8 @@ public class TestBackupBase {
         backupManager.writeBackupStartCode(newStartCode);
         failStageIf(Stage.stage_4);
         // backup complete
-        completeBackup(conn, backupInfo, BackupType.FULL, conf);
+        completeBackup(conn, backupInfo, BackupType.FULL, newStartCode, deadAndUnknownServers,
+          conf);
 
       } catch (Exception e) {
 

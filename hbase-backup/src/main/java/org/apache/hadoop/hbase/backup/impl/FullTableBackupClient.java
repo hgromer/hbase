@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupCopyJob;
 import org.apache.hadoop.hbase.backup.BackupInfo;
@@ -156,7 +157,8 @@ public class FullTableBackupClient extends TableBackupClient {
       // snapshots for the same reason as the log rolls.
       List<BulkLoad> bulkLoadsToDelete = backupManager.readBulkloadRows(tableList);
 
-      BackupUtils.logRoll(conn, backupInfo.getBackupRootDir(), conf);
+      Set<String> deadAndUnknownServers =
+        BackupUtils.logRoll(conn, backupInfo.getBackupRootDir(), conf);
 
       newTimestamps = backupManager.readRegionServerLastLogRollResult();
 
@@ -197,7 +199,7 @@ public class FullTableBackupClient extends TableBackupClient {
         .deleteBulkLoadedRows(bulkLoadsToDelete.stream().map(BulkLoad::getRowKey).toList());
 
       // backup complete
-      completeBackup(conn, backupInfo, BackupType.FULL, conf);
+      completeBackup(conn, backupInfo, BackupType.FULL, newStartCode, deadAndUnknownServers, conf);
     } catch (Exception e) {
       failBackup(conn, backupInfo, backupManager, e, "Unexpected BackupException : ",
         BackupType.FULL, conf);

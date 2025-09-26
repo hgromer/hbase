@@ -370,7 +370,7 @@ public abstract class TableBackupClient {
    * @throws IOException exception
    */
   protected void completeBackup(final Connection conn, BackupInfo backupInfo, BackupType type,
-    Configuration conf) throws IOException {
+    long newStartCode, Set<String> deadAndUnknownServers, Configuration conf) throws IOException {
     // set the complete timestamp of the overall backup
     backupInfo.setCompleteTs(EnvironmentEdgeManager.currentTime());
     // set overall backup status: complete
@@ -398,6 +398,7 @@ public abstract class TableBackupClient {
     }
     BackupSystemTable.deleteSnapshot(conn);
     backupManager.updateBackupInfo(backupInfo);
+    backupManager.cleanupRegionServerLogTimestamp(newStartCode, deadAndUnknownServers);
 
     // Finish active session
     backupManager.finishBackupSession();
