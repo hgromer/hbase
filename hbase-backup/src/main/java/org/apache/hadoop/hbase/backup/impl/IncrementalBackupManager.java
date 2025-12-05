@@ -27,6 +27,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Connection;
@@ -56,16 +57,16 @@ public class IncrementalBackupManager extends BackupManager {
    * @return The new HashMap of RS log time stamps after the log roll for this incremental backup.
    * @throws IOException exception
    */
-  public Map<String, Long> getIncrBackupLogFileMap() throws IOException {
+  public Map<ServerName, Long> getIncrBackupLogFileMap() throws IOException {
     List<String> logList;
-    Map<String, Long> newTimestamps;
-    Map<String, Long> previousTimestampMins;
+    Map<ServerName, Long> newTimestamps;
+    Map<ServerName, Long> previousTimestampMins;
 
     String savedStartCode = readBackupStartCode();
 
     // key: tableName
     // value: <RegionServer,PreviousTimeStamp>
-    Map<TableName, Map<String, Long>> previousTimestampMap = readLogTimestampMap();
+    Map<TableName, Map<ServerName, Long>> previousTimestampMap = readLogTimestampMap();
 
     previousTimestampMins = BackupUtils.getRSLogTimestampMins(previousTimestampMap);
 
@@ -117,8 +118,8 @@ public class IncrementalBackupManager extends BackupManager {
    * @return a list of log files to be backed up
    * @throws IOException exception
    */
-  private List<String> getLogFilesForNewBackup(Map<String, Long> olderTimestamps,
-    Map<String, Long> newestTimestamps, Configuration conf, String savedStartCode)
+  private List<String> getLogFilesForNewBackup(Map<ServerName, Long> olderTimestamps,
+    Map<ServerName, Long> newestTimestamps, Configuration conf, String savedStartCode)
     throws IOException {
     LOG.debug("In getLogFilesForNewBackup()\n" + "olderTimestamps: " + olderTimestamps
       + "\n newestTimestamps: " + newestTimestamps);
@@ -142,7 +143,7 @@ public class IncrementalBackupManager extends BackupManager {
      */
     FileStatus[] rss;
     Path p;
-    String host;
+    ServerName host;
     Long oldTimeStamp;
     String currentLogFile;
     long currentLogTS;
@@ -185,8 +186,8 @@ public class IncrementalBackupManager extends BackupManager {
         if (ts == null) {
           LOG.warn("ORPHAN log found: " + log + " host=" + host);
           LOG.debug("Known hosts (from newestTimestamps):");
-          for (String s : newestTimestamps.keySet()) {
-            LOG.debug(s);
+          for (ServerName s : newestTimestamps.keySet()) {
+            LOG.debug("{}", s);
           }
         }
         if (ts == null || currentLogTS > ts) {

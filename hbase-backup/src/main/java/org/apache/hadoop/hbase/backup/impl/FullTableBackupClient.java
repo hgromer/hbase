@@ -22,11 +22,11 @@ import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.BACKUP_MAX_A
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.DEFAULT_BACKUP_ATTEMPTS_PAUSE_MS;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.DEFAULT_BACKUP_MAX_ATTEMPTS;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.JOB_NAME_CONF_KEY;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupCopyJob;
 import org.apache.hadoop.hbase.backup.BackupInfo;
@@ -185,7 +185,7 @@ public class FullTableBackupClient extends TableBackupClient {
       // For incremental backup, it contains the incremental backup table set.
       backupManager.writeRegionServerLogTimestamp(backupInfo.getTables(), newTimestamps);
 
-      Map<TableName, Map<String, Long>> newTableSetTimestampMap =
+      Map<TableName, Map<ServerName, Long>> newTableSetTimestampMap =
         backupManager.readLogTimestampMap();
 
       backupInfo.setTableSetTimestampMap(newTableSetTimestampMap);

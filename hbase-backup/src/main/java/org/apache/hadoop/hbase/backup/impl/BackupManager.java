@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupHFileCleaner;
 import org.apache.hadoop.hbase.backup.BackupInfo;
@@ -358,7 +359,7 @@ public class BackupManager implements Closeable {
    * @return RS log info
    * @throws IOException exception
    */
-  public HashMap<String, Long> readRegionServerLastLogRollResult() throws IOException {
+  public HashMap<ServerName, Long> readRegionServerLastLogRollResult() throws IOException {
     return systemTable.readRegionServerLastLogRollResult(backupInfo.getBackupRootDir());
   }
 
@@ -390,7 +391,7 @@ public class BackupManager implements Closeable {
    * @param tables tables
    * @throws IOException exception
    */
-  public void writeRegionServerLogTimestamp(Set<TableName> tables, Map<String, Long> newTimestamps)
+  public void writeRegionServerLogTimestamp(Set<TableName> tables, Map<ServerName, Long> newTimestamps)
     throws IOException {
     systemTable.writeRegionServerLogTimestamp(tables, newTimestamps, backupInfo.getBackupRootDir());
   }
@@ -402,7 +403,7 @@ public class BackupManager implements Closeable {
    *         RegionServer,PreviousTimeStamp
    * @throws IOException exception
    */
-  public Map<TableName, Map<String, Long>> readLogTimestampMap() throws IOException {
+  public Map<TableName, Map<ServerName, Long>> readLogTimestampMap() throws IOException {
     return systemTable.readLogTimestampMap(backupInfo.getBackupRootDir());
   }
 

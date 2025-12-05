@@ -65,7 +65,6 @@ import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
@@ -90,28 +89,28 @@ public final class BackupUtils {
    * @param rsLogTimestampMap timestamp map
    * @return the min timestamp of each RS
    */
-  public static Map<String, Long>
-    getRSLogTimestampMins(Map<TableName, Map<String, Long>> rsLogTimestampMap) {
+  public static Map<ServerName, Long>
+    getRSLogTimestampMins(Map<TableName, Map<ServerName, Long>> rsLogTimestampMap) {
     if (rsLogTimestampMap == null || rsLogTimestampMap.isEmpty()) {
       return null;
     }
 
-    HashMap<String, Long> rsLogTimestampMins = new HashMap<>();
-    HashMap<String, HashMap<TableName, Long>> rsLogTimestampMapByRS = new HashMap<>();
+    HashMap<ServerName, Long> rsLogTimestampMins = new HashMap<>();
+    HashMap<ServerName, HashMap<TableName, Long>> rsLogTimestampMapByRS = new HashMap<>();
 
-    for (Entry<TableName, Map<String, Long>> tableEntry : rsLogTimestampMap.entrySet()) {
+    for (Entry<TableName, Map<ServerName, Long>> tableEntry : rsLogTimestampMap.entrySet()) {
       TableName table = tableEntry.getKey();
-      Map<String, Long> rsLogTimestamp = tableEntry.getValue();
-      for (Entry<String, Long> rsEntry : rsLogTimestamp.entrySet()) {
-        String rs = rsEntry.getKey();
+      Map<ServerName, Long> rsLogTimestamp = tableEntry.getValue();
+      for (Entry<ServerName, Long> rsEntry : rsLogTimestamp.entrySet()) {
+        ServerName rs = rsEntry.getKey();
         Long ts = rsEntry.getValue();
         rsLogTimestampMapByRS.putIfAbsent(rs, new HashMap<>());
         rsLogTimestampMapByRS.get(rs).put(table, ts);
       }
     }
 
-    for (Entry<String, HashMap<TableName, Long>> entry : rsLogTimestampMapByRS.entrySet()) {
-      String rs = entry.getKey();
+    for (Entry<ServerName, HashMap<TableName, Long>> entry : rsLogTimestampMapByRS.entrySet()) {
+      ServerName rs = entry.getKey();
       rsLogTimestampMins.put(rs, BackupUtils.getMinValue(entry.getValue()));
     }
 
@@ -188,18 +187,12 @@ public final class BackupUtils {
    * @param p path to WAL file
    * @return hostname:port
    */
-  public static String parseHostNameFromLogFile(Path p) {
+  public static ServerName parseHostNameFromLogFile(Path p) {
     try {
       if (AbstractFSWALProvider.isArchivedLogFile(p)) {
-        return BackupUtils.parseHostFromOldLog(p);
+        return AbstractFSWALProvider.parseServerNameFromWALName(p.getName());
       } else {
-        ServerName sname = AbstractFSWALProvider.getServerNameFromWALDirectoryName(p);
-        if (sname != null) {
-          return sname.getAddress().toString();
-        } else {
-          LOG.error("Skip log file (can't parse): " + p);
-          return null;
-        }
+        return AbstractFSWALProvider.getServerNameFromWALDirectoryName(p);
       }
     } catch (Exception e) {
       LOG.error("Skip log file (can't parse): " + p, e);
@@ -360,11 +353,10 @@ public final class BackupUtils {
   }
 
   /**
-   * Parses host name:port from archived WAL path
    * @param p path
    * @return host name
    */
-  public static String parseHostFromOldLog(Path p) {
+  public static ServerName parseHostFromOldLog(Path p) {
     // Skip master wals
     if (p.getName().endsWith(MasterRegionFactory.ARCHIVED_WAL_SUFFIX)) {
       return null;
@@ -747,6 +739,19 @@ public final class BackupUtils {
     return result == 0;
   }
 
+  public static ServerName parseHost(String host) {
+    if (host.contains(",")) {
+      return ServerName.parseServerName(host);
+    } else {
+      // Legacy format "hostname:port" without start code
+      // Parse and create ServerName with dummy start code of 0
+      String[] parts = host.split(":");
+      String hostname = parts[0];
+      int port = Integer.parseInt(parts[1]);
+      return ServerName.valueOf(hostname, port, 0L);
+    }
+  }
+
   public static BulkLoadHFiles createLoader(Configuration config) {
     // set configuration for restore:
     // LoadIncrementalHFile needs more time
@@ -796,7 +801,7 @@ public final class BackupUtils {
 
   private static void logRollV2(Connection conn, String backupRootDir) throws IOException {
     BackupSystemTable backupSystemTable = new BackupSystemTable(conn);
-    HashMap<String, Long> lastLogRollResult =
+    HashMap<ServerName, Long> lastLogRollResult =
       backupSystemTable.readRegionServerLastLogRollResult(backupRootDir);
     try (Admin admin = conn.getAdmin()) {
       Map<ServerName, Long> newLogRollResult = admin.rollAllWALWriters();
@@ -805,13 +810,12 @@ public final class BackupUtils {
         ServerName serverName = entry.getKey();
         long newHighestWALFilenum = entry.getValue();
 
-        String address = serverName.getAddress().toString();
-        Long lastHighestWALFilenum = lastLogRollResult.get(address);
+        Long lastHighestWALFilenum = lastLogRollResult.get(serverName);
         if (lastHighestWALFilenum != null && lastHighestWALFilenum > newHighestWALFilenum) {
           LOG.warn("Won't update last roll log result for server {}: current = {}, new = {}",
             serverName, lastHighestWALFilenum, newHighestWALFilenum);
         } else {
-          backupSystemTable.writeRegionServerLastLogRollResult(address, newHighestWALFilenum,
+          backupSystemTable.writeRegionServerLastLogRollResult(serverName, newHighestWALFilenum,
             backupRootDir);
           if (LOG.isDebugEnabled()) {
             LOG.debug("updated last roll log result for {} from {} to {}", serverName,

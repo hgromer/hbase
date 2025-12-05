@@ -21,7 +21,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,6 +35,7 @@ import java.util.TreeSet;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtil;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.SingleProcessHBaseCluster;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupInfo.BackupState;
@@ -187,7 +187,10 @@ public class TestBackupSystemTable {
 
   @Test
   public void testRegionServerLastLogRollResults() throws IOException {
-    String[] servers = new String[] { "server1", "server2", "server3" };
+    ServerName sn1 = ServerName.parseServerName("abc.gq1.ygridcore.net,52690,1517835491385");
+    ServerName sn2 = ServerName.parseServerName("xyz.gq1.ygridcore.net,52690,1517835491385");
+    ServerName sn3 = ServerName.parseServerName("def.gq1.ygridcore.net,52690,1517835491385");
+    ServerName[] servers = new ServerName[] {sn1, sn2, sn3};
     Long[] timestamps = new Long[] { 100L, 102L, 107L };
 
     // validate the prefix scan in readRegionServerlastLogRollResult will get the right timestamps
@@ -197,10 +200,10 @@ public class TestBackupSystemTable {
       table.writeRegionServerLastLogRollResult(servers[i], timestamps[i], "root/backup");
     }
 
-    HashMap<String, Long> result = table.readRegionServerLastLogRollResult("root");
+    HashMap<ServerName, Long> result = table.readRegionServerLastLogRollResult("root");
     assertTrue(servers.length == result.size());
-    Set<String> keys = result.keySet();
-    String[] keysAsArray = new String[keys.size()];
+    Set<ServerName> keys = result.keySet();
+    ServerName[] keysAsArray = new ServerName[keys.size()];
     keys.toArray(keysAsArray);
     Arrays.sort(keysAsArray);
 

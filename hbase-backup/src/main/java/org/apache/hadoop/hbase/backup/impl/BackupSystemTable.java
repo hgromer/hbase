@@ -75,10 +75,8 @@ import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterators;
-
 import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 
@@ -552,7 +550,7 @@ public final class BackupSystemTable implements Closeable {
    * @return RS log info
    * @throws IOException exception
    */
-  public HashMap<String, Long> readRegionServerLastLogRollResult(String backupRoot)
+  public HashMap<ServerName, Long> readRegionServerLastLogRollResult(String backupRoot)
     throws IOException {
     LOG.trace("read region server last roll log result to backup system table");
 
@@ -561,12 +559,12 @@ public final class BackupSystemTable implements Closeable {
     try (Table table = connection.getTable(tableName);
       ResultScanner scanner = table.getScanner(scan)) {
       Result res;
-      HashMap<String, Long> rsTimestampMap = new HashMap<>();
+      HashMap<ServerName, Long> rsTimestampMap = new HashMap<>();
       while ((res = scanner.next()) != null) {
         res.advance();
         Cell cell = res.current();
         byte[] row = CellUtil.cloneRow(cell);
-        String server = getServerNameForReadRegionServerLastLogRollResult(row);
+        ServerName server = getServerNameForReadRegionServerLastLogRollResult(row);
         byte[] data = CellUtil.cloneValue(cell);
         rsTimestampMap.put(server, Bytes.toLong(data));
       }
@@ -581,7 +579,7 @@ public final class BackupSystemTable implements Closeable {
    * @param backupRoot root directory path to backup
    * @throws IOException exception
    */
-  public void writeRegionServerLastLogRollResult(String server, Long ts, String backupRoot)
+  public void writeRegionServerLastLogRollResult(ServerName server, Long ts, String backupRoot)
     throws IOException {
     LOG.trace("write region server last roll log result to backup system table");
 
@@ -773,7 +771,7 @@ public final class BackupSystemTable implements Closeable {
    * @param backupRoot    root directory path to backup
    * @throws IOException exception
    */
-  public void writeRegionServerLogTimestamp(Set<TableName> tables, Map<String, Long> newTimestamps,
+  public void writeRegionServerLogTimestamp(Set<TableName> tables, Map<ServerName, Long> newTimestamps,
     String backupRoot) throws IOException {
     if (LOG.isTraceEnabled()) {
       LOG.trace("write RS log time stamps to backup system table for tables ["
@@ -799,13 +797,13 @@ public final class BackupSystemTable implements Closeable {
    *         RegionServer,PreviousTimeStamp
    * @throws IOException exception
    */
-  public Map<TableName, Map<String, Long>> readLogTimestampMap(String backupRoot)
+  public Map<TableName, Map<ServerName, Long>> readLogTimestampMap(String backupRoot)
     throws IOException {
     if (LOG.isTraceEnabled()) {
       LOG.trace("read RS log ts from backup system table for root=" + backupRoot);
     }
 
-    Map<TableName, Map<String, Long>> tableTimestampMap = new HashMap<>();
+    Map<TableName, Map<ServerName, Long>> tableTimestampMap = new HashMap<>();
 
     Scan scan = createScanForReadLogTimestampMap(backupRoot);
     try (Table table = connection.getTable(tableName);
@@ -823,7 +821,7 @@ public final class BackupSystemTable implements Closeable {
             + "is empty. Create a backup first.");
         }
         if (data != null && data.length > 0) {
-          HashMap<String, Long> lastBackup =
+          HashMap<ServerName, Long> lastBackup =
             fromTableServerTimestampProto(BackupProtos.TableServerTimestamp.parseFrom(data));
           tableTimestampMap.put(tn, lastBackup);
         }
@@ -833,16 +831,16 @@ public final class BackupSystemTable implements Closeable {
   }
 
   private BackupProtos.TableServerTimestamp toTableServerTimestampProto(TableName table,
-    Map<String, Long> map) {
+    Map<ServerName, Long> map) {
     BackupProtos.TableServerTimestamp.Builder tstBuilder =
       BackupProtos.TableServerTimestamp.newBuilder();
     tstBuilder
       .setTableName(org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil.toProtoTableName(table));
 
-    for (Entry<String, Long> entry : map.entrySet()) {
+    for (Entry<ServerName, Long> entry : map.entrySet()) {
       BackupProtos.ServerTimestamp.Builder builder = BackupProtos.ServerTimestamp.newBuilder();
       HBaseProtos.ServerName.Builder snBuilder = HBaseProtos.ServerName.newBuilder();
-      ServerName sn = ServerName.parseServerName(entry.getKey());
+      ServerName sn = entry.getKey();
       snBuilder.setHostName(sn.getHostname());
       snBuilder.setPort(sn.getPort());
       builder.setServerName(snBuilder.build());
@@ -853,15 +851,15 @@ public final class BackupSystemTable implements Closeable {
     return tstBuilder.build();
   }
 
-  private HashMap<String, Long>
+  private HashMap<ServerName, Long>
     fromTableServerTimestampProto(BackupProtos.TableServerTimestamp proto) {
 
-    HashMap<String, Long> map = new HashMap<>();
+    HashMap<ServerName, Long> map = new HashMap<>();
     List<BackupProtos.ServerTimestamp> list = proto.getServerTimestampList();
     for (BackupProtos.ServerTimestamp st : list) {
       ServerName sn =
         org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil.toServerName(st.getServerName());
-      map.put(sn.getHostname() + ":" + sn.getPort(), st.getTimestamp());
+      map.put(sn, st.getTimestamp());
     }
     return map;
   }
@@ -1335,9 +1333,9 @@ public final class BackupSystemTable implements Closeable {
    * @param timestamp log roll result (timestamp)
    * @return put operation
    */
-  private Put createPutForRegionServerLastLogRollResult(String server, Long timestamp,
+  private Put createPutForRegionServerLastLogRollResult(ServerName server, Long timestamp,
     String backupRoot) {
-    Put put = new Put(rowkey(RS_LOG_TS_PREFIX, backupRoot, NULL, server));
+    Put put = new Put(rowkey(RS_LOG_TS_PREFIX, backupRoot, NULL, server.getServerName()));
     put.addColumn(BackupSystemTable.META_FAMILY, Bytes.toBytes("rs-log-ts"),
       Bytes.toBytes(timestamp));
     return put;
@@ -1361,10 +1359,11 @@ public final class BackupSystemTable implements Closeable {
    * @param row rowkey
    * @return server's name
    */
-  private String getServerNameForReadRegionServerLastLogRollResult(byte[] row) {
+  private ServerName getServerNameForReadRegionServerLastLogRollResult(byte[] row) {
     String s = Bytes.toString(row);
     int index = s.lastIndexOf(NULL);
-    return s.substring(index + 1);
+    s = s.substring(index + 1);
+    return BackupUtils.parseHost(s);
   }
 
   /**

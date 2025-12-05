@@ -29,6 +29,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupInfo;
 import org.apache.hadoop.hbase.backup.BackupInfo.BackupPhase;
@@ -64,7 +65,7 @@ public abstract class TableBackupClient {
   protected Connection conn;
   protected String backupId;
   protected List<TableName> tableList;
-  protected Map<String, Long> newTimestamps = null;
+  protected Map<ServerName, Long> newTimestamps = null;
 
   protected BackupManager backupManager;
   protected BackupInfo backupInfo;

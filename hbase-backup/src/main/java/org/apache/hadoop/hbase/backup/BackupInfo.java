@@ -28,13 +28,13 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
 
@@ -142,13 +142,13 @@ public class BackupInfo implements Comparable<BackupInfo> {
    * New region server log timestamps for table set after distributed log roll key - table name,
    * value - map of RegionServer hostname -> last log rolled timestamp
    */
-  private Map<TableName, Map<String, Long>> tableSetTimestampMap;
+  private Map<TableName, Map<ServerName, Long>> tableSetTimestampMap;
 
   /**
    * Previous Region server log timestamps for table set after distributed log roll key - table
    * name, value - map of RegionServer hostname -> last log rolled timestamp
    */
-  private Map<TableName, Map<String, Long>> incrTimestampMap;
+  private Map<TableName, Map<ServerName, Long>> incrTimestampMap;
 
   /**
    * Backup progress in %% (0-100)
@@ -215,11 +215,11 @@ public class BackupInfo implements Comparable<BackupInfo> {
     this.backupTableInfoMap = backupTableInfoMap;
   }
 
-  public Map<TableName, Map<String, Long>> getTableSetTimestampMap() {
+  public Map<TableName, Map<ServerName, Long>> getTableSetTimestampMap() {
     return tableSetTimestampMap;
   }
 
-  public void setTableSetTimestampMap(Map<TableName, Map<String, Long>> tableSetTimestampMap) {
+  public void setTableSetTimestampMap(Map<TableName, Map<ServerName, Long>> tableSetTimestampMap) {
     this.tableSetTimestampMap = tableSetTimestampMap;
   }
 
@@ -380,7 +380,7 @@ public class BackupInfo implements Comparable<BackupInfo> {
    * Set the new region server log timestamps after distributed log roll
    * @param prevTableSetTimestampMap table timestamp map
    */
-  public void setIncrTimestampMap(Map<TableName, Map<String, Long>> prevTableSetTimestampMap) {
+  public void setIncrTimestampMap(Map<TableName, Map<ServerName, Long>> prevTableSetTimestampMap) {
     this.incrTimestampMap = prevTableSetTimestampMap;
   }
 
@@ -388,7 +388,7 @@ public class BackupInfo implements Comparable<BackupInfo> {
    * Get new region server log timestamps after distributed log roll
    * @return new region server log timestamps
    */
-  public Map<TableName, Map<String, Long>> getIncrTimestampMap() {
+  public Map<TableName, Map<ServerName, Long>> getIncrTimestampMap() {
     return this.incrTimestampMap;
   }
 
@@ -475,7 +475,7 @@ public class BackupInfo implements Comparable<BackupInfo> {
 
   private void setTableSetTimestampMap(BackupProtos.BackupInfo.Builder builder) {
     if (this.getTableSetTimestampMap() != null) {
-      for (Entry<TableName, Map<String, Long>> entry : this.getTableSetTimestampMap().entrySet()) {
+      for (Entry<TableName, Map<ServerName, Long>> entry : this.getTableSetTimestampMap().entrySet()) {
         builder.putTableSetTimestamp(entry.getKey().getNameAsString(),
           BackupProtos.BackupInfo.RSTimestampMap.newBuilder().putAllRsTimestamp(entry.getValue())
             .build());
@@ -529,9 +529,9 @@ public class BackupInfo implements Comparable<BackupInfo> {
     return map;
   }
 
-  private static Map<TableName, Map<String, Long>>
+  private static Map<TableName, Map<ServerName, Long>>
     getTableSetTimestampMap(Map<String, BackupProtos.BackupInfo.RSTimestampMap> map) {
-    Map<TableName, Map<String, Long>> tableSetTimestampMap = new HashMap<>();
+    Map<TableName, Map<ServerName, Long>> tableSetTimestampMap = new HashMap<>();
     for (Entry<String, BackupProtos.BackupInfo.RSTimestampMap> entry : map.entrySet()) {
       tableSetTimestampMap.put(TableName.valueOf(entry.getKey()),
         entry.getValue().getRsTimestampMap());

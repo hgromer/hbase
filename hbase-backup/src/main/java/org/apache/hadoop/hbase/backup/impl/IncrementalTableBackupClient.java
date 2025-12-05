@@ -18,7 +18,6 @@
 package org.apache.hadoop.hbase.backup.impl;
 
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.JOB_NAME_CONF_KEY;
-
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -33,6 +32,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupCopyJob;
 import org.apache.hadoop.hbase.backup.BackupInfo;
@@ -62,9 +62,7 @@ import org.apache.hadoop.util.Tool;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 
@@ -322,14 +320,14 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     // After this checkpoint, even if entering cancel process, will let the backup finished
     try {
       // Set the previousTimestampMap which is before this current log roll to the manifest.
-      Map<TableName, Map<String, Long>> previousTimestampMap = backupManager.readLogTimestampMap();
+      Map<TableName, Map<ServerName, Long>> previousTimestampMap = backupManager.readLogTimestampMap();
       backupInfo.setIncrTimestampMap(previousTimestampMap);
 
       // The table list in backupInfo is good for both full backup and incremental backup.
       // For incremental backup, it contains the incremental backup table set.
       backupManager.writeRegionServerLogTimestamp(backupInfo.getTables(), newTimestamps);
 
-      Map<TableName, Map<String, Long>> newTableSetTimestampMap =
+      Map<TableName, Map<ServerName, Long>> newTableSetTimestampMap =
         backupManager.readLogTimestampMap();
 
       backupInfo.setTableSetTimestampMap(newTableSetTimestampMap);

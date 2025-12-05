@@ -41,7 +41,6 @@ import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
@@ -114,7 +113,7 @@ public class BackupManifest {
     private long startTs;
     private long completeTs;
     private ArrayList<BackupImage> ancestors;
-    private Map<TableName, Map<String, Long>> incrTimeRanges;
+    private Map<TableName, Map<ServerName, Long>> incrTimeRanges;
 
     static Builder newBuilder() {
       return new Builder();
@@ -190,11 +189,11 @@ public class BackupManifest {
       return builder.build();
     }
 
-    private static Map<TableName, Map<String, Long>>
+    private static Map<TableName, Map<ServerName, Long>>
       loadIncrementalTimestampMap(BackupProtos.BackupImage proto) {
       List<BackupProtos.TableServerTimestamp> list = proto.getTstMapList();
 
-      Map<TableName, Map<String, Long>> incrTimeRanges = new HashMap<>();
+      Map<TableName, Map<ServerName, Long>> incrTimeRanges = new HashMap<>();
 
       if (list == null || list.size() == 0) {
         return incrTimeRanges;
@@ -202,7 +201,7 @@ public class BackupManifest {
 
       for (BackupProtos.TableServerTimestamp tst : list) {
         TableName tn = ProtobufUtil.toTableName(tst.getTableName());
-        Map<String, Long> map = incrTimeRanges.get(tn);
+        Map<ServerName, Long> map = incrTimeRanges.get(tn);
         if (map == null) {
           map = new HashMap<>();
           incrTimeRanges.put(tn, map);
@@ -210,7 +209,7 @@ public class BackupManifest {
         List<BackupProtos.ServerTimestamp> listSt = tst.getServerTimestampList();
         for (BackupProtos.ServerTimestamp stm : listSt) {
           ServerName sn = ProtobufUtil.toServerName(stm.getServerName());
-          map.put(sn.getHostname() + ":" + sn.getPort(), stm.getTimestamp());
+          map.put(sn, stm.getTimestamp());
         }
       }
       return incrTimeRanges;
@@ -220,19 +219,18 @@ public class BackupManifest {
       if (this.incrTimeRanges == null) {
         return;
       }
-      for (Entry<TableName, Map<String, Long>> entry : this.incrTimeRanges.entrySet()) {
+      for (Entry<TableName, Map<ServerName, Long>> entry : this.incrTimeRanges.entrySet()) {
         TableName key = entry.getKey();
-        Map<String, Long> value = entry.getValue();
+        Map<ServerName, Long> value = entry.getValue();
         BackupProtos.TableServerTimestamp.Builder tstBuilder =
           BackupProtos.TableServerTimestamp.newBuilder();
         tstBuilder.setTableName(ProtobufUtil.toProtoTableName(key));
 
-        for (Map.Entry<String, Long> entry2 : value.entrySet()) {
-          String s = entry2.getKey();
+        for (Map.Entry<ServerName, Long> entry2 : value.entrySet()) {
+          ServerName sn = entry2.getKey();
           BackupProtos.ServerTimestamp.Builder stBuilder =
             BackupProtos.ServerTimestamp.newBuilder();
           HBaseProtos.ServerName.Builder snBuilder = HBaseProtos.ServerName.newBuilder();
-          ServerName sn = ServerName.parseServerName(s);
           snBuilder.setHostName(sn.getHostname());
           snBuilder.setPort(sn.getPort());
           stBuilder.setServerName(snBuilder.build());
@@ -362,11 +360,11 @@ public class BackupManifest {
       return hash;
     }
 
-    public Map<TableName, Map<String, Long>> getIncrTimeRanges() {
+    public Map<TableName, Map<ServerName, Long>> getIncrTimeRanges() {
       return incrTimeRanges;
     }
 
-    private void setIncrTimeRanges(Map<TableName, Map<String, Long>> incrTimeRanges) {
+    private void setIncrTimeRanges(Map<TableName, Map<ServerName, Long>> incrTimeRanges) {
       this.incrTimeRanges = incrTimeRanges;
     }
   }
@@ -524,11 +522,11 @@ public class BackupManifest {
    * Set the incremental timestamp map directly.
    * @param incrTimestampMap timestamp map
    */
-  public void setIncrTimestampMap(Map<TableName, Map<String, Long>> incrTimestampMap) {
+  public void setIncrTimestampMap(Map<TableName, Map<ServerName, Long>> incrTimestampMap) {
     this.backupImage.setIncrTimeRanges(incrTimestampMap);
   }
 
-  public Map<TableName, Map<String, Long>> getIncrTimestampMap() {
+  public Map<TableName, Map<ServerName, Long>> getIncrTimestampMap() {
     return backupImage.getIncrTimeRanges();
   }
 

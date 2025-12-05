@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.Callable;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.backup.impl.BackupSystemTable;
 import org.apache.hadoop.hbase.backup.master.LogRollMasterProcedureManager;
 import org.apache.hadoop.hbase.client.Connection;
@@ -103,19 +104,16 @@ public class LogRollBackupSubprocedure extends Subprocedure {
       Connection connection = rss.getConnection();
       try (final BackupSystemTable table = new BackupSystemTable(connection)) {
         // sanity check, good for testing
-        HashMap<String, Long> serverTimestampMap =
+        HashMap<ServerName, Long> serverTimestampMap =
           table.readRegionServerLastLogRollResult(backupRoot);
-        String host = rss.getServerName().getHostname();
-        int port = rss.getServerName().getPort();
-        String server = host + ":" + port;
-        Long sts = serverTimestampMap.get(host);
+        Long sts = serverTimestampMap.get(rss.getServerName());
         if (sts != null && sts > highest) {
           LOG
             .warn("Won't update server's last roll log result: current=" + sts + " new=" + highest);
           return null;
         }
         // write the log number to backup system table.
-        table.writeRegionServerLastLogRollResult(server, highest, backupRoot);
+        table.writeRegionServerLastLogRollResult(rss.getServerName(), highest, backupRoot);
         return null;
       } catch (Exception e) {
         LOG.error(e.toString(), e);

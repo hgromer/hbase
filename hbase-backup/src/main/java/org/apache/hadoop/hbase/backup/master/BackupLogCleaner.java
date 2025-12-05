@@ -45,7 +45,6 @@ import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.org.apache.commons.collections4.IterableUtils;
 import org.apache.hbase.thirdparty.org.apache.commons.collections4.MapUtils;
 
@@ -115,7 +114,7 @@ public class BackupLogCleaner extends BaseLogCleanerDelegate {
     // This map tracks, for every RegionServer, the least recent (= oldest / lowest timestamp)
     // inclusion in any backup. In other words, it is the timestamp boundary up to which all backup
     // roots have included the WAL in their backup.
-    Map<Address, Long> boundaries = new HashMap<>();
+    ServerPreservationBoundariesBuilder builder = new ServerPreservationBoundariesBuilder();
     for (BackupInfo backupInfo : newestBackupPerRootDir.values()) {
       // Iterate over all tables in the timestamp map, which contains all tables covered in the
       // backup root, not just the tables included in that specific backup (which could be a subset)
@@ -123,13 +122,12 @@ public class BackupLogCleaner extends BaseLogCleanerDelegate {
         for (Map.Entry<String, Long> entry : backupInfo.getTableSetTimestampMap().get(table)
           .entrySet()) {
           Address address = Address.fromString(entry.getKey());
-          Long storedTs = boundaries.get(address);
-          if (storedTs == null || entry.getValue() < storedTs) {
-            boundaries.put(address, entry.getValue());
-          }
+          builder.add(backupInfo, address, entry.getValue());
         }
       }
     }
+
+    Map<Address, Long> boundaries = builder.build();
 
     if (LOG.isDebugEnabled()) {
       for (Map.Entry<Address, Long> entry : boundaries.entrySet()) {
@@ -217,11 +215,8 @@ public class BackupLogCleaner extends BaseLogCleanerDelegate {
       long walTimestamp = AbstractFSWALProvider.getTimestamp(path.getName());
 
       if (!addressToBoundaryTs.containsKey(walServerAddress)) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("No cleanup WAL time-boundary found for server: {}. Ok to delete file: {}",
-            walServerAddress.getHostName(), path);
-        }
-        return true;
+        LOG.warn("Could not find {} in boundaries map, won't delete {}", addressToBoundaryTs, path);
+        return false;
       }
 
       Long backupBoundary = addressToBoundaryTs.get(walServerAddress);
